@@ -42,8 +42,8 @@ static ssize_t ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char 
 static ssize_t ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t size);
 
 
-static ngx_send_pt old_ngx_send_with_encode;
-static ngx_send_pt old_ngx_send_with_decode;
+static ngx_send_pt original_ngx_send_with_encode;
+static ngx_send_pt original_ngx_send_with_decode;
 
 typedef struct ngx_http_websockify_loc_conf_s {
     ngx_http_upstream_conf_t       upstream; 
@@ -282,7 +282,7 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
     if ( b->pos < b->last ){
         ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: old buff not clean...[%d]", fname, b->last - b->pos);
 
-        n = ngx_http_websockify_send_buffer(c, b, old_ngx_send_with_encode, flush);
+        n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_encode, flush);
         if ( n == NGX_ERROR ){
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: send buffer error! ", fname);
             return NGX_ERROR;
@@ -306,7 +306,7 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
 
     b->last += payload; // push encoded data into buffer
 
-    n = ngx_http_websockify_send_buffer(c, b, old_ngx_send_with_encode, flush);
+    n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_encode, flush);
     
     return n < 0 ? n : (ssize_t)consumed_size;
 
@@ -349,7 +349,7 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t si
     if ( b-> pos < b->last ){
         ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: old buff not clean...[%d]", fname, b->last - b->pos);
 
-        n = ngx_http_websockify_send_buffer(c, b, old_ngx_send_with_decode, flush);
+        n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_decode, flush);
         if ( n == NGX_ERROR ){
             return NGX_ERROR;
         }
@@ -371,7 +371,7 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t si
 
     b->last += payload; // push decoded data into buffer
 
-    n = ngx_http_websockify_send_buffer(c, b, old_ngx_send_with_decode, flush);
+    n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_decode, flush);
 
     if ( opcode == 8){ // client closed
         return size;
@@ -749,12 +749,12 @@ ngx_http_websockify_process_header(ngx_http_request_t *r)
         u->upgrade = 1;
 
         if ( r->connection->send != ngx_http_websockify_send_with_encode ){
-            old_ngx_send_with_encode = r->connection->send;
+            original_ngx_send_with_encode = r->connection->send;
             r->connection->send = ngx_http_websockify_send_with_encode;
         }
 
         if ( r->upstream->peer.connection->send != ngx_http_websockify_send_with_decode ){
-            old_ngx_send_with_decode = r->upstream->peer.connection->send;
+            original_ngx_send_with_decode = r->upstream->peer.connection->send;
             r->upstream->peer.connection->send = ngx_http_websockify_send_with_decode;
         }
 
