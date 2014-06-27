@@ -41,13 +41,13 @@ Options
 
   There are three options you can use to adjust them for different situation:
 
-    `websockify_buffer_size`  :  Default: `32768` 
+  * `websockify_buffer_size`  :  Default: `32768` 
     The buffer size used to store the encode/decode data.
 
-    `websockify_send_chunk_size`  : Default: `16384` 
+  * `websockify_send_chunk_size`  : Default: `16384` 
     Framenting the sending-data if it greater than this value. 
 
-    `websockify_send_flush` : Default: `Off` 
+  * `websockify_send_flush` : Default: `Off` 
     Sometimes, the data from upstream is too large, we have to frament it to send it out, however, this could impact the the usability because some data could be cached. Enable this options to send all data in one-time. the module will keep trying to send all of them by using exponential backoff policy. 
 
 
