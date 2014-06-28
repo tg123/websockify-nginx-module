@@ -298,7 +298,7 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
 
     consumed_size = ngx_min( (free_size - 4) / 4 * 3 - 2, size);
 
-    payload = ngx_http_websockify_encode_hybi(buf, size, (char *)b->last , free_size , 1);
+    payload = ngx_http_websockify_encode_hybi(buf, consumed_size, (char *)b->last , free_size , 1);
     if (payload <=0){
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: encode error! ", fname);
         return NGX_ERROR;
