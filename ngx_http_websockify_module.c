@@ -222,8 +222,14 @@ ngx_http_websockify_buf_cleanup(ngx_event_t *ev)
     ctx = ev->data;
     r = ctx->request;
 
-    ngx_http_websockify_send_buffer(r->connection, ctx->encode_send_buf, original_ngx_send_with_encode, 0);
-    ngx_http_websockify_send_buffer(r->upstream->peer.connection, ctx->decode_send_buf, original_ngx_send_with_decode, 0);
+    if ( r->connection ){
+        ngx_http_websockify_send_buffer(r->connection, ctx->encode_send_buf, original_ngx_send_with_encode, 0);
+    }
+
+    if ( r->upstream->peer.connection ) {
+        ngx_http_websockify_send_buffer(r->upstream->peer.connection, ctx->decode_send_buf, original_ngx_send_with_decode, 0);
+    }
+
 }  
 
 static ssize_t
@@ -245,6 +251,7 @@ ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt s
 
     for(;;){
         n = send(c, b->pos, b->last - b->pos);
+
         ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: sent buffer : %d / %d", fname, n, b->last - b->pos);
 
         if (n > 0) {
@@ -264,7 +271,7 @@ ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt s
                 continue;
             } else {
                 ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: add timer", fname);
-                ngx_add_timer(&ctx->buf_cleanup_ev, 20); // TODO hardcode
+                ngx_add_timer(&(ctx->buf_cleanup_ev), 20); // TODO hardcode
             }
         } 
 
@@ -325,7 +332,7 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
         return NGX_AGAIN;
     }
 
-    consumed_size = ngx_min( (free_size - 4) / 4 * 3 - 2, size);
+    consumed_size = ngx_min( (free_size - 4) / 4 * 3 - 4, size);
 
     payload = ngx_http_websockify_encode_hybi(buf, consumed_size, (char *)b->last , free_size , 1);
     if (payload < 0){
