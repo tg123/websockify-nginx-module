@@ -70,7 +70,6 @@ ngx_module_t ngx_http_websockify_module;
 
 
 // {{{ code from websockify.c 
-// TODO nginx ver base64 remove lresolv
 static ssize_t 
 ngx_http_websockify_encode_hybi(u_char const *src, size_t srclength,
                 char *target, size_t targsize, unsigned int opcode)
@@ -83,7 +82,7 @@ ngx_http_websockify_encode_hybi(u_char const *src, size_t srclength,
         return 0;
     }
 
-    b64_sz = ((srclength - 1) / 3) * 4 + 4;
+    b64_sz = ngx_base64_encoded_length(srclength);
 
     target[0] = (char)((opcode & 0x0F) | 0x80);
 
@@ -96,13 +95,18 @@ ngx_http_websockify_encode_hybi(u_char const *src, size_t srclength,
         payload_offset = 4;
     }
 
-    len = b64_ntop(src, srclength, target + payload_offset, targsize - payload_offset);
-    
-    if (len < 0) {
-        return len;
-    }
+    //len = b64_ntop(src, srclength, target + payload_offset, targsize - payload_offset);
 
-    return len + payload_offset;
+    ngx_str_t b64src;
+    b64src.data = src;
+    b64src.len = srclength;
+
+    ngx_str_t dst;
+    dst.data = target + payload_offset;
+    dst.len  = b64_sz;
+
+    ngx_encode_base64(&dst, &b64src);
+    return b64_sz + payload_offset;
 }
 
 static ssize_t 
@@ -192,15 +196,33 @@ ngx_http_websockify_decode_hybi(unsigned char *src, size_t srclength,
             payload[i] ^= mask[i%4];
         }
 
-        // base64 decode the data
-        len = b64_pton((const char*)payload, target+target_offset, targsize);
 
+        // base64 decode the data
+        //len = b64_pton((const char*)payload, target+target_offset, targsize);
+        if ( target_offset + ngx_base64_decoded_length(payload_length) > targsize ){
+            break;
+        }
+
+        ngx_str_t b64src;
+        b64src.data = payload;
+        b64src.len = payload_length;
+
+        ngx_str_t b64dst;
+        b64dst.data = target + target_offset;
+
+        if( ngx_decode_base64(&b64dst, &b64src) != NGX_OK ){
+            return NGX_ERROR;
+        }
+
+        len = b64dst.len;
+
+        // TODO clean up code
         // Restore the first character of the next frame
         payload[payload_length] = save_char;
-        if (len < 0) {
+        //if (len < 0) {
             //handler_emsg("Base64 decode error code %d", len);
-            return len;
-        }
+        //    return len;
+        //}
         target_offset += len;
 
         //printf("    len %d, raw %s\n", len, frame);
