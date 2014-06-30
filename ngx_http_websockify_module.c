@@ -71,8 +71,8 @@ ngx_module_t ngx_http_websockify_module;
 
 // {{{ code from websockify.c 
 static ssize_t 
-ngx_http_websockify_encode_hybi(u_char const *src, size_t srclength,
-                char *target, size_t targsize, unsigned int opcode)
+ngx_http_websockify_encode_hybi(u_char *src, size_t srclength,
+                u_char *target, size_t targsize, unsigned int opcode)
 {
     unsigned long long b64_sz, /*len_offset = 1,*/ payload_offset = 2;
     long len = 0;
@@ -354,7 +354,7 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
 
     consumed_size = ngx_min( (free_size - 4) / 4 * 3 - 4, size);
 
-    payload = ngx_http_websockify_encode_hybi(buf, consumed_size, (char *)b->last , free_size , 1);
+    payload = ngx_http_websockify_encode_hybi(buf, consumed_size, b->last , free_size , 1);
     if (payload < 0){
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: encode error! ", __func__);
         return NGX_ERROR;
