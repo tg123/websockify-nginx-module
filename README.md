@@ -47,10 +47,6 @@ Options
   * `websockify_send_chunk_size`  : Default: `16384` 
     Framenting the sending-data if it greater than this value. 
 
-  * `websockify_send_flush` : Default: `Off` 
-    In some senarios, the data from upstream is too large, we have to frament it to send it out, however, this could impact the the usability because framentation means the data would be cached. Enable this option would keep trying hard to send all of frament data in one time, the retrying mechanism is using the exponential backoff policy. 
-
-
 
 Nginx Compatibility
 -------------------

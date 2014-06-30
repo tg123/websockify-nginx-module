@@ -38,7 +38,7 @@ static void ngx_http_websockify_finalize_request(ngx_http_request_t *r, ngx_int_
 
 
 static void ngx_http_websockify_buf_cleanup(ngx_event_t *ev);
-static ssize_t ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt send, ngx_flag_t flush);
+static ssize_t ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt send);
 static ssize_t ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t size);
 static ssize_t ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t size);
 
@@ -49,7 +49,6 @@ static ngx_send_pt original_ngx_send_with_decode;
 typedef struct ngx_http_websockify_loc_conf_s {
     ngx_http_upstream_conf_t       upstream; 
     size_t                         chunk_size;
-    ngx_flag_t                     flush;
 
     ngx_array_t                   *websockify_lengths;
     ngx_array_t                   *websockify_values;
@@ -246,17 +245,17 @@ ngx_http_websockify_buf_cleanup(ngx_event_t *ev)
     r = ctx->request;
 
     if ( r->connection ){
-        ngx_http_websockify_send_buffer(r->connection, ctx->encode_send_buf, original_ngx_send_with_encode, 0);
+        ngx_http_websockify_send_buffer(r->connection, ctx->encode_send_buf, original_ngx_send_with_encode);
     }
 
     if ( r->upstream->peer.connection ) {
-        ngx_http_websockify_send_buffer(r->upstream->peer.connection, ctx->decode_send_buf, original_ngx_send_with_decode, 0);
+        ngx_http_websockify_send_buffer(r->upstream->peer.connection, ctx->decode_send_buf, original_ngx_send_with_decode);
     }
 
 }  
 
 static ssize_t
-ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt send, ngx_flag_t flush)
+ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt send)
 {
     ngx_http_websockify_ctx_t       *ctx;
     ngx_http_request_t        *r;
@@ -286,18 +285,11 @@ ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt s
         }
 
         if (n == NGX_AGAIN){
-            if ( flush ) {
-                ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: continue, wait(%dms)", __func__, t);
-                ngx_msleep(t);
-                if (t<400) t*=2;
-                continue;
-            } else {
-                ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: add timer", __func__);
-                ngx_add_timer(&(ctx->buf_cleanup_ev), 20); // TODO hardcode
-            }
+            ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: add timer", __func__);
+            ngx_add_timer(&(ctx->buf_cleanup_ev), 20); // TODO hardcode
         } 
 
-        if ( (n <= 0) || (b->pos == b->last) || (!flush) ) {
+        if ( (n <= 0) || (b->pos == b->last) ) {
             break;
         }
     }
@@ -317,7 +309,6 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
 
     size_t                     free_size;
     size_t                     consumed_size = 0, chunk_size = 0; 
-    ngx_flag_t                 flush = 0;
 
 
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: sending data...[%d]", __func__, size);
@@ -326,7 +317,6 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
     wlcf = ngx_http_get_module_loc_conf(r, ngx_http_websockify_module);
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
 
-    flush = wlcf->flush;
     chunk_size = wlcf->chunk_size;
     if (chunk_size > 0 && size > chunk_size){
         ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: size is too large[%d], send part of it...[%d]", __func__, size, chunk_size);
@@ -339,7 +329,7 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
     if ( b->pos < b->last ){
         ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: old buff not clean...[%d]", __func__, b->last - b->pos);
 
-        n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_encode, flush);
+        n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_encode);
         if ( n == NGX_ERROR ){
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: send buffer error! ", __func__);
             return NGX_ERROR;
@@ -356,6 +346,8 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
     consumed_size = ngx_min( (free_size - 4) / 4 * 3 - 4, size);
 
     payload = ngx_http_websockify_encode_hybi(buf, consumed_size, b->last , free_size , 1);
+
+    // todo cleanup cant happen
     if (payload < 0){
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: encode error! ", __func__);
         return NGX_ERROR;
@@ -363,7 +355,10 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
 
     b->last += payload; // push encoded data into buffer
 
-    n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_encode, flush);
+    n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_encode);
+    if ( n == NGX_ERROR ){
+        return NGX_ERROR;
+    }
     
     return (ssize_t)consumed_size;
 
@@ -382,7 +377,6 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t si
     unsigned int               opcode = 0, left;
     ssize_t                    payload;
     size_t                     chunk_size;
-    ngx_flag_t                 flush = 0;
 
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: [%d]", __func__, size);
 
@@ -391,7 +385,6 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t si
     wlcf = ngx_http_get_module_loc_conf(r, ngx_http_websockify_module);
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
 
-    flush = wlcf->flush;
     chunk_size = wlcf->chunk_size;
 
     if (chunk_size > 0 && size > chunk_size){
@@ -405,7 +398,7 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t si
     if ( b-> pos < b->last ){
         ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: old buff not clean...[%d]", __func__, b->last - b->pos);
 
-        n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_decode, flush);
+        n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_decode);
         if ( n == NGX_ERROR ){
             return NGX_ERROR;
         }
@@ -436,7 +429,10 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t si
 
     b->last += payload; // push decoded data into buffer
 
-    n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_decode, flush);
+    n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_decode);
+    if ( n == NGX_ERROR ){
+        return NGX_ERROR;
+    }
 
     return (ssize_t)(size - left);
 }
@@ -460,12 +456,6 @@ static ngx_command_t ngx_http_websockify_commands[] = {
           NGX_HTTP_LOC_CONF_OFFSET,
           offsetof(ngx_http_websockify_loc_conf_t, chunk_size),
           NULL }, 
-    { ngx_string("websockify_send_flush"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
-      ngx_conf_set_flag_slot,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_websockify_loc_conf_t, flush),
-      NULL },
     
     ngx_null_command
 };
@@ -517,7 +507,6 @@ ngx_http_websockify_create_loc_conf(ngx_conf_t *cf)
 
 
     conf->chunk_size = NGX_CONF_UNSET_SIZE;
-    conf->flush = NGX_CONF_UNSET;
 
     return conf;
 }
@@ -547,8 +536,6 @@ ngx_http_websockify_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_size_value(conf->chunk_size,
                               prev->chunk_size,
                               (size_t) SEND_MAX_BUFFER_SIZE);
-
-    ngx_conf_merge_value(conf->flush, prev->flush, 0);
 
     ngx_conf_merge_bitmask_value(conf->upstream.next_upstream,
                               prev->upstream.next_upstream,
