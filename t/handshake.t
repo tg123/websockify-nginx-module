@@ -59,6 +59,9 @@ Upgrade:websocket
     }
 --- tcp_listen: 5901
 --- tcp_reply: RFB
---- request
-    GET /websockify
+--- raw_request eval
+["GET /websockify_pass HTTP/1.1\r
+Host: localhost/",
+"data ask for tcp reply\r
+Content-Length:1\r\n\r\n0"]
 --- error_code: 400
