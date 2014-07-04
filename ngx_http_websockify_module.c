@@ -73,8 +73,8 @@ static ssize_t
 ngx_http_websockify_encode_hybi(u_char *src, size_t srclength,
                 u_char *target, size_t targsize, unsigned int opcode)
 {
-    unsigned long long b64_sz, /*len_offset = 1,*/ payload_offset = 2;
-    long len = 0;
+    size_t b64_sz;
+    unsigned int payload_offset = 2;
     
     if ((int)srclength <= 0)
     {
@@ -262,7 +262,6 @@ ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt s
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
 
     ssize_t n;
-    int     t = 50;
 
     if (b->last == b->pos){
         return 0;
