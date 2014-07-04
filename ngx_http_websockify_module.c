@@ -16,7 +16,6 @@
 #include <ngx_http.h>
 
 #include <ngx_sha1.h>
-#include <resolv.h>      /* base64 encode/decode */
 
 #define HYBI_GUID               "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 #define HYBI10_ACCEPTHDRLEN     29
@@ -94,12 +93,11 @@ ngx_http_websockify_encode_hybi(u_char *src, size_t srclength,
         *(u_short*)&(target[2]) = htons(b64_sz);
         payload_offset = 4;
     }
-
-    //len = b64_ntop(src, srclength, target + payload_offset, targsize - payload_offset);
+    // TODO return fail or trim
 
     ngx_str_t b64src;
     b64src.data = src;
-    b64src.len = srclength;
+    b64src.len  = srclength;
 
     ngx_str_t dst;
     dst.data = target + payload_offset;
