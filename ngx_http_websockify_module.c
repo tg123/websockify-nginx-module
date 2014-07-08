@@ -412,7 +412,7 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t si
     payload = ngx_http_websockify_decode_hybi(buf, size, b->last , free_size, &opcode, &left);
 
     if ( opcode == 8){ // client closed
-        		ngx_close_connection(c);
+        ngx_close_connection(c);
         return size;
     }
 
