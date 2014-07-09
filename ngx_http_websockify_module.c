@@ -39,6 +39,7 @@ static void ngx_http_websockify_finalize_request(ngx_http_request_t *r, ngx_int_
 static void ngx_http_websockify_buf_cleanup(ngx_event_t *ev);
 static ssize_t ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt send);
 static ssize_t ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t size);
+static ssize_t ngx_http_websockify_send_with_encode_and_opcode(ngx_connection_t *c, u_char *buf, size_t size, unsigned int opcode);
 static ssize_t ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t size);
 
 
@@ -297,6 +298,12 @@ ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt s
 static ssize_t 
 ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t size)
 {
+    return ngx_http_websockify_send_with_encode_and_opcode(c, buf, size, 1);
+}
+
+static ssize_t 
+ngx_http_websockify_send_with_encode_and_opcode(ngx_connection_t *c, u_char *buf, size_t size, unsigned int opcode)
+{
     ngx_http_websockify_loc_conf_t  *wlcf;
     ngx_http_websockify_ctx_t       *ctx;
     ngx_buf_t                 *b;
@@ -342,7 +349,7 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
 
     consumed_size = ngx_min( (free_size - 4) / 4 * 3 - 4, size);
 
-    payload = ngx_http_websockify_encode_hybi(buf, consumed_size, b->last , free_size , 1);
+    payload = ngx_http_websockify_encode_hybi(buf, consumed_size, b->last , free_size , opcode);
 
     // todo cleanup cant happen
     if (payload < 0){
@@ -412,8 +419,12 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t si
     payload = ngx_http_websockify_decode_hybi(buf, size, b->last , free_size, &opcode, &left);
 
     if ( opcode == 8){ // client closed
-        ngx_close_connection(c);
-        return size;
+        n = ngx_http_websockify_send_with_encode_and_opcode(r->connection, b->last, payload, opcode);
+        if( n < NGX_OK ){
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: echoing close frame failed! code=%d", __func__, n);
+        }
+        ngx_close_connection(r->connection);
+        return n;
     }
 
     if (payload == 0) {
