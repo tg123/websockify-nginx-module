@@ -81,7 +81,8 @@ ngx_http_websockify_encode_hybi(u_char *src, size_t srclength,
         return 0;
     }
 
-    b64_sz = ngx_base64_encoded_length(srclength);
+    //b64_sz = ngx_base64_encoded_length(srclength);
+    b64_sz = srclength;
 
     target[0] = (char)((opcode & 0x0F) | 0x80);
 
@@ -95,6 +96,7 @@ ngx_http_websockify_encode_hybi(u_char *src, size_t srclength,
     }
     // TODO return fail or trim
 
+    #if 0
     ngx_str_t b64src;
     b64src.data = src;
     b64src.len  = srclength;
@@ -104,6 +106,10 @@ ngx_http_websockify_encode_hybi(u_char *src, size_t srclength,
     dst.len  = b64_sz;
 
     ngx_encode_base64(&dst, &b64src);
+    #endif
+
+    ngx_memcpy(target + payload_offset, src, srclength);
+
     return b64_sz + payload_offset;
 }
 
@@ -195,6 +201,7 @@ ngx_http_websockify_decode_hybi(unsigned char *src, size_t srclength,
         }
 
 
+        #if 0
         // base64 decode the data
         //len = b64_pton((const char*)payload, target+target_offset, targsize);
         if ( target_offset + ngx_base64_decoded_length(payload_length) > targsize ){
@@ -213,6 +220,10 @@ ngx_http_websockify_decode_hybi(unsigned char *src, size_t srclength,
         }
 
         len = b64dst.len;
+        #endif
+
+        ngx_memcpy(target + target_offset, payload, payload_length);
+        len = payload_length;
 
         // TODO clean up code
         // Restore the first character of the next frame
@@ -342,7 +353,7 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
 
     consumed_size = ngx_min( (free_size - 4) / 4 * 3 - 4, size);
 
-    payload = ngx_http_websockify_encode_hybi(buf, consumed_size, b->last , free_size , 1);
+    payload = ngx_http_websockify_encode_hybi(buf, consumed_size, b->last , free_size , 2);
 
     // todo cleanup cant happen
     if (payload < 0){
@@ -806,8 +817,8 @@ ngx_http_websockify_process_header(ngx_http_request_t *r)
             h = ngx_list_push(&r->headers_out.headers);
             h->hash = 1;
             ngx_str_set(&h->key, "Sec-WebSocket-Protocol");
-            ngx_str_set(&h->value, "base64");
-
+            //ngx_str_set(&h->value, "base64");
+            ngx_str_set(&h->value, "binary");
 
             u->state->status = u->headers_in.status_n;
             u->upgrade = 1;
