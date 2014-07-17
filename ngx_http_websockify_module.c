@@ -21,7 +21,6 @@
 #define HYBI10_ACCEPTHDRLEN     29
 
 #define BUFFER_SIZE             32768
-#define SEND_MAX_BUFFER_SIZE    16384
 
 static ngx_int_t ngx_http_websockify_handler(ngx_http_request_t *r);
 static char *ngx_http_websockify(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
@@ -38,8 +37,8 @@ static void ngx_http_websockify_finalize_request(ngx_http_request_t *r, ngx_int_
 
 static void ngx_http_websockify_buf_cleanup(ngx_event_t *ev);
 static ssize_t ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt send);
-static ssize_t ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t size);
-static ssize_t ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t size);
+static ssize_t ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, const size_t size);
+static ssize_t ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, const size_t size);
 
 
 static ngx_send_pt original_ngx_send_with_encode;
@@ -49,7 +48,6 @@ static ngx_recv_pt original_ngx_upstream_recv;
 
 typedef struct ngx_http_websockify_loc_conf_s {
     ngx_http_upstream_conf_t       upstream; 
-    size_t                         chunk_size;
 
     ngx_array_t                   *websockify_lengths;
     ngx_array_t                   *websockify_values;
@@ -269,7 +267,7 @@ static ssize_t
 ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt send)
 {
     ngx_http_websockify_ctx_t       *ctx;
-    ngx_http_request_t        *r;
+    ngx_http_request_t              *r;
 
     r = c->data;
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
@@ -308,17 +306,17 @@ ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt s
 }
 
 static ssize_t 
-ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t size)
+ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, const size_t size)
 {
     ngx_http_websockify_loc_conf_t  *wlcf;
     ngx_http_websockify_ctx_t       *ctx;
-    ngx_buf_t                 *b;
-    ngx_http_request_t        *r;
-    ssize_t                    n;
-    ssize_t                    payload;
+    ngx_buf_t                       *b;
+    ngx_http_request_t              *r;
+    ssize_t                          n;
+    ssize_t                          payload;
 
-    size_t                     free_size;
-    size_t                     consumed_size = 0, chunk_size = 0; 
+    size_t                           free_size;
+    size_t                           consumed_size = 0; 
 
 
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: sending data...[%d]", __func__, size);
@@ -326,13 +324,6 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
     r = c->data;
     wlcf = ngx_http_get_module_loc_conf(r, ngx_http_websockify_module);
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
-
-    chunk_size = wlcf->chunk_size;
-    if (chunk_size > 0 && size > chunk_size){
-        ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: size is too large[%d], send part of it...[%d]", __func__, size, chunk_size);
-        size = chunk_size;
-    }
-
 
     b = ctx->encode_send_buf;
 
@@ -375,7 +366,7 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, size_t si
 }
 
 static ssize_t 
-ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t size)
+ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, const size_t size)
 {
     ngx_http_websockify_loc_conf_t  *wlcf;
     ngx_http_websockify_ctx_t       *ctx;
@@ -386,7 +377,6 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t si
     size_t                     free_size;
     unsigned int               opcode = 0, left;
     ssize_t                    payload;
-    size_t                     chunk_size;
 
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: [%d]", __func__, size);
 
@@ -394,14 +384,6 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t si
     r = c->data;
     wlcf = ngx_http_get_module_loc_conf(r, ngx_http_websockify_module);
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
-
-    chunk_size = wlcf->chunk_size;
-
-    if (chunk_size > 0 && size > chunk_size){
-        ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: size is too large[%d], send part of it...[%d]", __func__, size, chunk_size);
-        size = chunk_size;
-    }
-    
 
     b = ctx->decode_send_buf;
 
@@ -460,12 +442,6 @@ static ngx_command_t ngx_http_websockify_commands[] = {
           NGX_HTTP_LOC_CONF_OFFSET,
           offsetof(ngx_http_websockify_loc_conf_t, upstream.buffer_size),
           NULL }, 
-    { ngx_string("websockify_send_chunk_size"),
-          NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
-          ngx_conf_set_size_slot,
-          NGX_HTTP_LOC_CONF_OFFSET,
-          offsetof(ngx_http_websockify_loc_conf_t, chunk_size),
-          NULL }, 
     
     ngx_null_command
 };
@@ -515,9 +491,6 @@ ngx_http_websockify_create_loc_conf(ngx_conf_t *cf)
     conf->upstream.pass_request_headers = 0;
     conf->upstream.pass_request_body = 0;
 
-
-    conf->chunk_size = NGX_CONF_UNSET_SIZE;
-
     return conf;
 }
 
@@ -542,10 +515,6 @@ ngx_http_websockify_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_size_value(conf->upstream.buffer_size,
                               prev->upstream.buffer_size,
                               (size_t) BUFFER_SIZE);
-
-    ngx_conf_merge_size_value(conf->chunk_size,
-                              prev->chunk_size,
-                              (size_t) SEND_MAX_BUFFER_SIZE);
 
     ngx_conf_merge_bitmask_value(conf->upstream.next_upstream,
                               prev->upstream.next_upstream,
@@ -682,7 +651,6 @@ ngx_http_websockify_handler(ngx_http_request_t *r)
     ctx->request = r;
     ctx->encode_send_buf = ngx_create_temp_buf(r->pool, 2 * u->conf->buffer_size); 
     ctx->decode_send_buf = ngx_create_temp_buf(r->pool, 2 * u->conf->buffer_size); 
-    //ctx->chunk_size = wlcf->chunk_size;
 
     ctx->ws_key.len  = 0;
     ctx->ws_key.data = NULL;

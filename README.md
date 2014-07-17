@@ -44,9 +44,6 @@ Options
   * `websockify_buffer_size`  :  Default: `32768` 
     The buffer size used to store the encode/decode data.
 
-  * `websockify_send_chunk_size`  : Default: `16384` 
-    Framenting the sending-data if it greater than this value. 
-
 
 Nginx Compatibility
 -------------------
