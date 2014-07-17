@@ -423,9 +423,9 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, size_t si
         if( n < NGX_OK ){
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: echoing close frame failed! code=%d", __func__, n);
         }
-        ngx_http_finalize_request(r, NGX_DONE);
-        ngx_http_free_request(r, NGX_DONE);
-        return NGX_DONE;
+        ngx_http_finalize_request(r, NGX_OK);
+
+        return NGX_OK;
     }
 
     if (payload == 0) {
