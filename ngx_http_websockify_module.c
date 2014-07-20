@@ -745,8 +745,10 @@ ngx_http_websockify_process_header(ngx_http_request_t *r)
     ngx_list_part_t             *part;
     ngx_uint_t                   i;
     ngx_sha1_t                   sha1;
-    ngx_str_t                    ws_key;
+    ngx_str_t                    ws_key = {0, NULL};
 
+    ngx_flag_t                   accept_binary = 0;
+    ngx_flag_t                   accept_base64 = 0;
 
 
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "websockify : ngx_http_websockify_process_header");
@@ -781,80 +783,86 @@ ngx_http_websockify_process_header(ngx_http_request_t *r)
         if (ngx_strncasecmp(h[i].key.data, (u_char *) "Sec-WebSocket-Key", h[i].key.len) == 0){
             ngx_log_debug(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "websockify : found SEC_WEBSOCKET_KEY : %s", h[i].value.data);
 
-            if ( ctx ){
-                
-                ngx_str_t src;
-                src.data = ngx_palloc(r->pool, 20 * sizeof(u_char));
-                src.len = 20;
+            ngx_str_t src;
+            src.data = ngx_palloc(r->pool, 20 * sizeof(u_char));
+            src.len = 20;
 
-                if (src.data == NULL){
-                    return NGX_ERROR;
-                }
+            if (src.data == NULL){
+                return NGX_ERROR;
+            }
 
-                ngx_sha1_init(&sha1);
-                ngx_sha1_update(&sha1, h[i].value.data, h[i].value.len);
-                ngx_sha1_update(&sha1, HYBI_GUID, 36);
-                ngx_sha1_final(src.data, &sha1);
+            ngx_sha1_init(&sha1);
+            ngx_sha1_update(&sha1, h[i].value.data, h[i].value.len);
+            ngx_sha1_update(&sha1, HYBI_GUID, 36);
+            ngx_sha1_final(src.data, &sha1);
 
-                ws_key.len = HYBI10_ACCEPTHDRLEN; //MAX ACCEPT
-                ws_key.data = ngx_palloc(r->pool, HYBI10_ACCEPTHDRLEN);
+            ws_key.len = HYBI10_ACCEPTHDRLEN; //MAX ACCEPT
+            ws_key.data = ngx_palloc(r->pool, HYBI10_ACCEPTHDRLEN);
 
-                if ( ws_key.data == NULL){
-                    return NGX_ERROR;
-                }
+            if ( ws_key.data == NULL){
+                return NGX_ERROR;
+            }
 
-                ngx_encode_base64(&ws_key, &src);
+            ngx_encode_base64(&ws_key, &src);
 
-                // TODO parse Sec-WebSocket-Protocol
+        }else if (ngx_strncasecmp(h[i].key.data, (u_char *) "Sec-WebSocket-Protocol", h[i].key.len) == 0){
+            
+            if (ngx_strstrn(h[i].value.data, "base64", 6 - 1)) {
+                accept_base64 = 1;
+            }
 
-
-                // break;
-
-
-                u->headers_in.status_n = NGX_HTTP_SWITCHING_PROTOCOLS;
-                ngx_str_set(&u->headers_in.status_line, "101 Switching Protocols");
-                u->headers_in.content_length_n = -1;
-
-                h = ngx_list_push(&r->headers_out.headers);
-                h->hash = 1;
-                ngx_str_set(&h->key, "Sec-WebSocket-Accept");
-                h->value = ws_key;
-
-                h = ngx_list_push(&r->headers_out.headers);
-                h->hash = 1;
-                ngx_str_set(&h->key, "Upgrade");
-                ngx_str_set(&h->value, "websocket");
-
-                h = ngx_list_push(&r->headers_out.headers);
-                h->hash = 1;
-                ngx_str_set(&h->key, "Sec-WebSocket-Protocol");
-                //ngx_str_set(&h->value, "base64");
-                ngx_str_set(&h->value, "binary");
-
-
-                u->state->status = u->headers_in.status_n;
-                u->upgrade = 1;
-
-                if ( r->connection->send != ngx_http_websockify_send_with_encode ){
-                    ctx->original_ngx_downstream_send = r->connection->send;
-                    r->connection->send = ngx_http_websockify_send_with_encode;
-                }
-
-                if ( r->upstream->peer.connection->send != ngx_http_websockify_send_with_decode ){
-                    ctx->original_ngx_upstream_send = r->upstream->peer.connection->send;
-                    r->upstream->peer.connection->send = ngx_http_websockify_send_with_decode;
-                }
-
-
-                return NGX_OK;
+            if (ngx_strstrn(h[i].value.data, "binary", 6 - 1)) {
+                accept_binary = 1;
             }
 
         }
     }
 
+    if ( ws_key.len > 0 && ( accept_base64 || accept_binary ) ){
+
+        u->headers_in.status_n = NGX_HTTP_SWITCHING_PROTOCOLS;
+        ngx_str_set(&u->headers_in.status_line, "101 Switching Protocols");
+        u->headers_in.content_length_n = -1;
+
+        h = ngx_list_push(&r->headers_out.headers);
+        h->hash = 1;
+        ngx_str_set(&h->key, "Sec-WebSocket-Accept");
+        h->value = ws_key;
+
+        h = ngx_list_push(&r->headers_out.headers);
+        h->hash = 1;
+        ngx_str_set(&h->key, "Upgrade");
+        ngx_str_set(&h->value, "websocket");
+
+        h = ngx_list_push(&r->headers_out.headers);
+        h->hash = 1;
+        ngx_str_set(&h->key, "Sec-WebSocket-Protocol");
+
+        if ( accept_binary ) {
+            ngx_str_set(&h->value, "binary");
+        } else {
+            ngx_str_set(&h->value, "base64");
+        }
+
+        u->state->status = u->headers_in.status_n;
+        u->upgrade = 1;
+
+        if ( r->connection->send != ngx_http_websockify_send_with_encode ){
+            ctx->original_ngx_downstream_send = r->connection->send;
+            r->connection->send = ngx_http_websockify_send_with_encode;
+        }
+
+        if ( r->upstream->peer.connection->send != ngx_http_websockify_send_with_decode ){
+            ctx->original_ngx_upstream_send = r->upstream->peer.connection->send;
+            r->upstream->peer.connection->send = ngx_http_websockify_send_with_decode;
+        }
 
 
-    u->headers_in.status_n = NGX_HTTP_BAD_REQUEST;
+
+    } else {
+        u->headers_in.status_n = NGX_HTTP_BAD_REQUEST;
+    }
+
     return NGX_OK;
 }
 
