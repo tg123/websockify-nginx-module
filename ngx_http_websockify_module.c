@@ -308,7 +308,6 @@ ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t* b, ngx_send_pt s
 static ssize_t 
 ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, const size_t size)
 {
-    ngx_http_websockify_loc_conf_t  *wlcf;
     ngx_http_websockify_ctx_t       *ctx;
     ngx_buf_t                       *b;
     ngx_http_request_t              *r;
@@ -322,7 +321,6 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, const siz
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: sending data...[%d]", __func__, size);
 
     r = c->data;
-    wlcf = ngx_http_get_module_loc_conf(r, ngx_http_websockify_module);
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
 
     b = ctx->encode_send_buf;
@@ -368,21 +366,19 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, const siz
 static ssize_t 
 ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, const size_t size)
 {
-    ngx_http_websockify_loc_conf_t  *wlcf;
     ngx_http_websockify_ctx_t       *ctx;
-    ngx_buf_t                 *b;
-    ngx_http_request_t        *r;
-    ssize_t                    n;
+    ngx_buf_t                       *b;
+    ngx_http_request_t              *r;
+    ssize_t                          n;
 
-    size_t                     free_size;
-    unsigned int               opcode = 0, left;
-    ssize_t                    payload;
+    size_t                           free_size;
+    unsigned int                     opcode = 0, left;
+    ssize_t                          payload;
 
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: [%d]", __func__, size);
 
 
     r = c->data;
-    wlcf = ngx_http_get_module_loc_conf(r, ngx_http_websockify_module);
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
 
     b = ctx->decode_send_buf;
