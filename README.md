@@ -39,10 +39,9 @@ Uasge
 Options
 -------
 
-  There are three options you can use to adjust them for different situation:
-
   * `websockify_buffer_size`  :  Default: `32768` 
     The buffer size used to store the encode/decode data.
+    each websockify connection will cost `websockify_buffer_size` * 4 ( 1 upstream * 2 + 1 downstream * 2 ) addational memory
 
 
 Nginx Compatibility
