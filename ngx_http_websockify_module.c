@@ -41,11 +41,6 @@ static ssize_t ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char 
 static ssize_t ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, const size_t size);
 
 
-static ngx_send_pt original_ngx_send_with_encode;
-static ngx_send_pt original_ngx_send_with_decode;
-
-static ngx_recv_pt original_ngx_upstream_recv;
-
 typedef struct ngx_http_websockify_loc_conf_s {
     ngx_http_upstream_conf_t       upstream; 
 
@@ -55,13 +50,18 @@ typedef struct ngx_http_websockify_loc_conf_s {
 
 typedef struct ngx_http_websockify_request_ctx_s {
     ngx_http_request_t        *request;
-    ngx_str_t                  ws_key;
-    ngx_flag_t                 header_processed;
+    ngx_flag_t                 need_cleanup_fake_recv_buff;
 
     ngx_buf_t                 *encode_send_buf;
     ngx_buf_t                 *decode_send_buf;
 
     ngx_event_t                buf_cleanup_ev;
+
+    ngx_send_pt                original_ngx_downstream_send;
+    ngx_send_pt                original_ngx_upstream_send;
+
+    ngx_recv_pt                original_ngx_upstream_recv;
+
 } ngx_http_websockify_ctx_t ;
 
 
@@ -254,11 +254,11 @@ ngx_http_websockify_buf_cleanup(ngx_event_t *ev)
     r = ctx->request;
 
     if ( r->connection ){
-        ngx_http_websockify_send_buffer(r->connection, ctx->encode_send_buf, original_ngx_send_with_encode);
+        ngx_http_websockify_send_buffer(r->connection, ctx->encode_send_buf, ctx->original_ngx_downstream_send);
     }
 
     if ( r->upstream->peer.connection ) {
-        ngx_http_websockify_send_buffer(r->upstream->peer.connection, ctx->decode_send_buf, original_ngx_send_with_decode);
+        ngx_http_websockify_send_buffer(r->upstream->peer.connection, ctx->decode_send_buf, ctx->original_ngx_upstream_send);
     }
 
 }  
@@ -330,7 +330,7 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, const siz
     if ( b->pos < b->last ){
         ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: old buff not clean...[%d]", __func__, b->last - b->pos);
 
-        n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_encode);
+        n = ngx_http_websockify_send_buffer(c, b, ctx->original_ngx_downstream_send);
         if ( n == NGX_ERROR ){
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: send buffer error! ", __func__);
             return NGX_ERROR;
@@ -356,7 +356,7 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf, const siz
 
     b->last += payload; // push encoded data into buffer
 
-    n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_encode);
+    n = ngx_http_websockify_send_buffer(c, b, ctx->original_ngx_downstream_send);
     if ( n == NGX_ERROR ){
         return NGX_ERROR;
     }
@@ -390,7 +390,7 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, const siz
     if ( b-> pos < b->last ){
         ngx_log_debug(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: old buff not clean...[%d]", __func__, b->last - b->pos);
 
-        n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_decode);
+        n = ngx_http_websockify_send_buffer(c, b, ctx->original_ngx_upstream_send);
         if ( n == NGX_ERROR ){
             return NGX_ERROR;
         }
@@ -421,7 +421,7 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf, const siz
 
     b->last += payload; // push decoded data into buffer
 
-    n = ngx_http_websockify_send_buffer(c, b, original_ngx_send_with_decode);
+    n = ngx_http_websockify_send_buffer(c, b, ctx->original_ngx_upstream_send);
     if ( n == NGX_ERROR ){
         return NGX_ERROR;
     }
@@ -652,10 +652,6 @@ ngx_http_websockify_handler(ngx_http_request_t *r)
     ctx->encode_send_buf = ngx_create_temp_buf(r->pool, 2 * u->conf->buffer_size); 
     ctx->decode_send_buf = ngx_create_temp_buf(r->pool, 2 * u->conf->buffer_size); 
 
-    ctx->ws_key.len  = 0;
-    ctx->ws_key.data = NULL;
-    ctx->header_processed = 0;
-
     ctx->buf_cleanup_ev.log     = r->connection->log;
     ctx->buf_cleanup_ev.data    = ctx;
     ctx->buf_cleanup_ev.handler = ngx_http_websockify_buf_cleanup;
@@ -678,22 +674,101 @@ ngx_http_websockify_handler(ngx_http_request_t *r)
 static ngx_int_t
 ngx_http_websockify_create_request(ngx_http_request_t *r)
 {
-    ngx_table_elt_t             *h;
-    ngx_list_part_t             *part;
-    ngx_uint_t                   i;
-    //ngx_uint_t                   rc;
-    ngx_http_websockify_ctx_t   *ctx;
-    ngx_sha1_t                   sha1;
-
-
-    part = &r->headers_in.headers.part;
-    h = part->elts;
+    ngx_http_websockify_ctx_t       *ctx;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
 
     if ( ctx == NULL ) {
         return NGX_ERROR;
     }
+
+    // tricky, let nginx call my reinit
+    // do nothing to tcp connections
+    r->upstream->request_sent = 1;
+
+    return NGX_OK;
+}
+
+static ssize_t 
+ngx_http_websockify_empty_recv(ngx_connection_t *c, u_char *buf, size_t size)
+{
+    ngx_http_request_t              *r;
+    ngx_http_websockify_ctx_t       *ctx;
+
+    r = c->data;
+    ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
+
+    ssize_t n = ctx->original_ngx_upstream_recv(c, buf, 1);
+    c->recv = ctx->original_ngx_upstream_recv;
+
+    // tricky, if n == NGX_ERROR upstream might not have connections now
+    // return control to nginx and let nginx deal with it
+    if(n == NGX_ERROR){
+        return NGX_AGAIN;
+    }
+
+    if(n == NGX_AGAIN){
+        ctx->need_cleanup_fake_recv_buff = 1;
+        return 1;
+    }
+
+    ctx->need_cleanup_fake_recv_buff = 0;
+    return n;
+}
+
+static ngx_int_t
+ngx_http_websockify_reinit_request(ngx_http_request_t *r)
+{
+    ngx_http_upstream_t         *u;
+    ngx_http_websockify_ctx_t   *ctx;
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
+
+    if (r->header_sent){
+        return NGX_OK;
+    }
+
+    u = r->upstream;
+
+    // hack for empty reply tcp connection
+    ctx->original_ngx_upstream_recv = u->peer.connection->recv;
+    u->peer.connection->recv = ngx_http_websockify_empty_recv;
+
+    u->read_event_handler(r, r->upstream);
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_websockify_process_header(ngx_http_request_t *r)
+{
+    ngx_http_websockify_ctx_t   *ctx;
+    ngx_http_upstream_t         *u;
+
+    ngx_table_elt_t             *h;
+    ngx_list_part_t             *part;
+    ngx_uint_t                   i;
+    ngx_sha1_t                   sha1;
+    ngx_str_t                    ws_key;
+
+
+
+    ngx_log_debug(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "websockify : ngx_http_websockify_process_header");
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
+
+    if ( ctx == NULL ) {
+        return NGX_ERROR;
+    }
+
+    u = r->upstream;
+
+    if(ctx->need_cleanup_fake_recv_buff){
+        u->buffer.last = u->buffer.start;
+    }
+
+    part = &r->headers_in.headers.part;
+    h = part->elts;
 
     for (i = 0; /* void */; i++) {
 
@@ -725,119 +800,65 @@ ngx_http_websockify_create_request(ngx_http_request_t *r)
                 ngx_sha1_update(&sha1, HYBI_GUID, 36);
                 ngx_sha1_final(src.data, &sha1);
 
-                ctx->ws_key.len = HYBI10_ACCEPTHDRLEN; //MAX ACCEPT
-                ctx->ws_key.data = ngx_palloc(r->pool, HYBI10_ACCEPTHDRLEN);
+                ws_key.len = HYBI10_ACCEPTHDRLEN; //MAX ACCEPT
+                ws_key.data = ngx_palloc(r->pool, HYBI10_ACCEPTHDRLEN);
 
-                if ( ctx->ws_key.data == NULL){
+                if ( ws_key.data == NULL){
                     return NGX_ERROR;
                 }
 
-                ngx_encode_base64(&ctx->ws_key, &src);
+                ngx_encode_base64(&ws_key, &src);
 
-                // this sucks
-                r->upstream->request_sent = 1;
+                // TODO parse Sec-WebSocket-Protocol
 
-                break;
+
+                // break;
+
+
+                u->headers_in.status_n = NGX_HTTP_SWITCHING_PROTOCOLS;
+                ngx_str_set(&u->headers_in.status_line, "101 Switching Protocols");
+                u->headers_in.content_length_n = -1;
+
+                h = ngx_list_push(&r->headers_out.headers);
+                h->hash = 1;
+                ngx_str_set(&h->key, "Sec-WebSocket-Accept");
+                h->value = ws_key;
+
+                h = ngx_list_push(&r->headers_out.headers);
+                h->hash = 1;
+                ngx_str_set(&h->key, "Upgrade");
+                ngx_str_set(&h->value, "websocket");
+
+                h = ngx_list_push(&r->headers_out.headers);
+                h->hash = 1;
+                ngx_str_set(&h->key, "Sec-WebSocket-Protocol");
+                //ngx_str_set(&h->value, "base64");
+                ngx_str_set(&h->value, "binary");
+
+
+                u->state->status = u->headers_in.status_n;
+                u->upgrade = 1;
+
+                if ( r->connection->send != ngx_http_websockify_send_with_encode ){
+                    ctx->original_ngx_downstream_send = r->connection->send;
+                    r->connection->send = ngx_http_websockify_send_with_encode;
+                }
+
+                if ( r->upstream->peer.connection->send != ngx_http_websockify_send_with_decode ){
+                    ctx->original_ngx_upstream_send = r->upstream->peer.connection->send;
+                    r->upstream->peer.connection->send = ngx_http_websockify_send_with_decode;
+                }
+
+
+                return NGX_OK;
             }
 
         }
     }
 
-    return NGX_OK;
-}
-
-static ssize_t 
-ngx_http_websockify_empty_recv(ngx_connection_t *c, u_char *buf, size_t size)
-{
-    return 1;
-}
-
-static ngx_int_t
-ngx_http_websockify_reinit_request(ngx_http_request_t *r)
-{
-    ngx_http_upstream_t         *u;
-    ngx_http_websockify_ctx_t   *ctx;
-
-    ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
-
-    if (ctx->header_processed ){
-        return NGX_OK;
-    }
-
-    u = r->upstream;
-
-    // hack for empty reply tcp connection
-    original_ngx_upstream_recv = u->peer.connection->recv;
-    u->peer.connection->recv = ngx_http_websockify_empty_recv;
-
-    u->read_event_handler(r, r->upstream);
-
-    return NGX_OK;
-}
-
-static ngx_int_t
-ngx_http_websockify_process_header(ngx_http_request_t *r)
-{
-    ngx_http_upstream_t         *u;
-    ngx_table_elt_t             *h;
-    ngx_http_websockify_ctx_t   *ctx;
-
-    ngx_log_debug(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "websockify : ngx_http_websockify_process_header");
-
-    ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
-
-    if ( ctx == NULL ) {
-        return NGX_ERROR;
-    }
-
-    ctx->header_processed = 1;
-
-    u = r->upstream;
-    u->peer.connection->recv = original_ngx_upstream_recv;
-    u->buffer.last = u->buffer.start;
-
-    if ( ctx->ws_key.len > 0 ) {
-
-        u->headers_in.status_n = NGX_HTTP_SWITCHING_PROTOCOLS;
-        ngx_str_set(&u->headers_in.status_line, "101 Switching Protocols");
-        u->headers_in.content_length_n = -1;
-
-        h = ngx_list_push(&r->headers_out.headers);
-        h->hash = 1;
-        ngx_str_set(&h->key, "Sec-WebSocket-Accept");
-        h->value = ctx->ws_key;
-
-        h = ngx_list_push(&r->headers_out.headers);
-        h->hash = 1;
-        ngx_str_set(&h->key, "Upgrade");
-        ngx_str_set(&h->value, "websocket");
-
-        h = ngx_list_push(&r->headers_out.headers);
-        h->hash = 1;
-        ngx_str_set(&h->key, "Sec-WebSocket-Protocol");
-        //ngx_str_set(&h->value, "base64");
-        ngx_str_set(&h->value, "binary");
 
 
-        u->state->status = u->headers_in.status_n;
-        u->upgrade = 1;
-
-        if ( r->connection->send != ngx_http_websockify_send_with_encode ){
-            original_ngx_send_with_encode = r->connection->send;
-            r->connection->send = ngx_http_websockify_send_with_encode;
-        }
-
-        if ( r->upstream->peer.connection->send != ngx_http_websockify_send_with_decode ){
-            original_ngx_send_with_decode = r->upstream->peer.connection->send;
-            r->upstream->peer.connection->send = ngx_http_websockify_send_with_decode;
-        }
-
-    } else {
-        
-        u->headers_in.status_n = NGX_HTTP_BAD_REQUEST;
-    }
-
-
+    u->headers_in.status_n = NGX_HTTP_BAD_REQUEST;
     return NGX_OK;
 }
 
