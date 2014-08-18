@@ -615,7 +615,6 @@ ngx_http_websockify_handler(ngx_http_request_t *r)
     if ( wlcf->websockify_lengths ) { // parse from var
 
         if (ngx_http_script_run(r, &var_pass, wlcf->websockify_lengths->elts, 0,
-            // hack for empty reply tcp connection
                     wlcf->websockify_values->elts) == NULL)
         {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
