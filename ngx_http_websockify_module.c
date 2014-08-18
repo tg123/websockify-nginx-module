@@ -762,6 +762,11 @@ ngx_http_websockify_reinit_request(ngx_http_request_t *r)
 
     u->read_event_handler(r, r->upstream);
 
+    // this happens if some error occurs during read_event_handler
+    if( u->peer.connection == NULL ){
+        return NGX_ERROR;
+    }
+
     return NGX_OK;
 }
 
