@@ -12,7 +12,7 @@ __DATA__
 === TEST 1: websocket handshake
 --- config
     location /websockify {
-    	websockify_pass 0:5901;
+       websockify_pass 127.0.0.1:5901;
     }
 --- tcp_listen: 5901
 --- tcp_reply: RFB
@@ -37,7 +37,7 @@ Upgrade:websocket
 === TEST 2: bad upstream
 --- config
     location /websockify {
-    	websockify_pass 0:5901;
+       websockify_pass 127.0.0.1:5901;
     }
 --- request
     GET /websockify
@@ -54,7 +54,7 @@ Upgrade:websocket
 === TEST 3: bad handshake header
 --- config
     location /websockify {
-    	websockify_pass 0:5901;
+       websockify_pass 127.0.0.1:5901;
     }
 --- tcp_listen: 5901
 --- tcp_reply: RFB
@@ -67,7 +67,7 @@ GET /websockify
 === TEST 4: select protocol
 --- config
     location /websockify {
-    	websockify_pass 0:5901;
+       websockify_pass 127.0.0.1:5901;
     }
 --- tcp_listen: 5901
 --- tcp_reply: RFB
@@ -92,7 +92,7 @@ Upgrade:websocket
 === TEST 5: unsupported protocol 
 --- config
     location /websockify {
-    	websockify_pass 0:5901;
+       websockify_pass 127.0.0.1:5901;
     }
 --- tcp_listen: 5901
 --- tcp_reply: RFB
