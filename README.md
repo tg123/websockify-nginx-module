@@ -60,7 +60,7 @@ Options
     [proxy_send_timeout](http://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_send_timeout) of websockify upstream
 
     
-
+Nginx Compatibility
 -------------------
 
  * 1.5.x (Tested on 1.5.9)
