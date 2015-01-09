@@ -372,14 +372,14 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf,
 
     free_size = b->end - b->last;
 
-    if (free_size <=
-        8) {  // no enough buffer at this time 4 header + 4 min base64 encode 1 char
+    // no enough buffer at this time 4 header + 4 min base64 encode 1 char
+    if (free_size <= 8) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                        "%s: no enough buffer, try again... ", WEBSOCKIFY_FUNC);
         return NGX_AGAIN;
     }
 
-    consumed_size = ngx_min( (free_size - 4) / 4 * 3 - 4, size);
+    consumed_size = ngx_min( (free_size - 4) / 4 * 3 - 2, size);
 
     // TODO clean up code it is UGLY
     // TODO 1 for text frame 2 for binary is now hardcode
