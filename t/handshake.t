@@ -1,4 +1,3 @@
-use lib 'lib';
 use Test::Nginx::Socket;
 
 plan tests => 13;
