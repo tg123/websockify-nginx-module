@@ -140,44 +140,58 @@ ngx_http_websockify_encode_hybi(u_char *src, size_t srclength,
 
 // TODO reforge and clean up
 static ssize_t
-ngx_http_websockify_decode_hybi(unsigned char *src, size_t srclength,
+ngx_http_websockify_decode_hybi(u_char *src, size_t srclength,
                                 u_char *target, size_t targsize,
                                 unsigned int *opcode, unsigned int *left,
                                 websockify_encoding_protocol_e encoding_protocol)
 {
-    unsigned char *frame, *mask, *payload, save_char/*, cntstr[4];*/;
-    int masked = 0;
-    int i = 0, len, framecount = 0;
-    size_t remaining = 0;
-    unsigned int target_offset = 0, hdr_length = 0, payload_length = 0;
+    u_char       *frame, *mask, *payload;
+    int           masked = 0;
+    size_t        i = 0, len;
+    size_t        remaining = 0;
+    unsigned int  target_offset = 0, hdr_length = 0, payload_length = 0;
 
     *left = srclength;
     frame = src;
 
-    //printf("Deocde new frame\n");
-    while (1) {
+    //    https://tools.ietf.org/html/rfc6455#section-5.1
+    //    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    //    +-+-+-+-+-------+-+-------------+-------------------------------+
+    //    |F|R|R|R| opcode|M| Payload len |    Extended payload length    |
+    //    |I|S|S|S|  (4)  |A|     (7)     |             (16/64)           |
+    //    |N|V|V|V|       |S|             |   (if payload len==126/127)   |
+    //    | |1|2|3|       |K|             |                               |
+    //    +-+-+-+-+-------+-+-------------+ - - - - - - - - - - - - - - - +
+    //    |     Extended payload length continued, if payload len == 127  |
+    //    + - - - - - - - - - - - - - - - +-------------------------------+
+    //    |                               |Masking-key, if MASK set to 1  |
+    //    +-------------------------------+-------------------------------+
+    //    | Masking-key (continued)       |          Payload Data         |
+    //    +-------------------------------- - - - - - - - - - - - - - - - +
+    //    :                     Payload Data continued ...                :
+    //    + - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - +
+    //    |                     Payload Data continued ...                |
+    //    +---------------------------------------------------------------+
+
+    for (;;) {
         // Need at least two bytes of the header
         // Find beginning of next frame. First time hdr_length, masked and
         // payload_length are zero
         frame += hdr_length + 4 * masked + payload_length;
-        //printf("frame[0..3]: 0x%x 0x%x 0x%x 0x%x (tot: %d)\n",
-        //       (unsigned char) frame[0],
-        //       (unsigned char) frame[1],
-        //       (unsigned char) frame[2],
-        //       (unsigned char) frame[3], srclength);
 
         if (frame > src + srclength) {
-            //printf("Truncated frame from client, need %d more bytes\n", frame - (src + srclength) );
             break;
         }
+
         remaining = (src + srclength) - frame;
+
+        // Truncated frame header from client
         if (remaining < 2) {
-            //printf("Truncated frame header from client\n");
             break;
         }
-        framecount ++;
 
         *opcode = frame[0] & 0x0f;
+        // TODO clean up must be true (designed for recv form client only)
         masked = (frame[1] & 0x80) >> 7;
 
         if (*opcode == 0x8) {
@@ -193,37 +207,35 @@ ngx_http_websockify_decode_hybi(unsigned char *src, size_t srclength,
             payload_length = (frame[2] << 8) + frame[3];
             hdr_length = 4;
         } else {
-            //handler_emsg("Receiving frames larger than 65535 bytes not supported\n");
-            return -1;
+            // Receiving frames larger than 65535 bytes not supported
+            // TODO log
+            return NGX_ERROR;
         }
+
         if ((hdr_length + 4 * masked + payload_length) > remaining) {
             continue;
         }
-        //printf("    payload_length: %u, raw remaining: %u\n", payload_length, remaining);
+
         payload = frame + hdr_length + 4 * masked;
 
+        // TODO do some respone to opcode like ping
         if (*opcode != 1 && *opcode != 2) {
-            //handler_msg("Ignoring non-data frame, opcode 0x%x\n", *opcode);
             continue;
         }
 
+        // Ignoring empty frame
         if (payload_length == 0) {
-            //handler_msg("Ignoring empty frame\n");
             continue;
         }
 
+        // Received unmasked payload from client
         if ((payload_length > 0) && (!masked)) {
-            ///handler_emsg("Received unmasked payload from client\n");
-            return -1;
+            return NGX_ERROR;
         }
-
-        // Terminate with a null for base64 decode
-        save_char = payload[payload_length];
-        payload[payload_length] = '\0';
 
         // unmask the data
         mask = payload - 4;
-        for (i = 0; (unsigned int)i < payload_length; i++) {
+        for (i = 0; i < payload_length; i++) {
             payload[i] ^= mask[i % 4];
         }
 
@@ -233,7 +245,6 @@ ngx_http_websockify_decode_hybi(unsigned char *src, size_t srclength,
             ngx_str_t b64dst;
 
             // base64 decode the data
-            //len = b64_pton((const char*)payload, target+target_offset, targsize);
             if ( target_offset + ngx_base64_decoded_length(payload_length) > targsize ) {
                 break;
             }
@@ -255,16 +266,7 @@ ngx_http_websockify_decode_hybi(unsigned char *src, size_t srclength,
             len = payload_length;
         }
 
-        // TODO clean up code
-        // Restore the first character of the next frame
-        payload[payload_length] = save_char;
-        //if (len < 0) {
-        //handler_emsg("Base64 decode error code %d", len);
-        //    return len;
-        //}
         target_offset += len;
-
-        //printf("    len %d, raw %s\n", len, frame);
     }
 
 
@@ -452,6 +454,8 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf,
     }
 
 
+    // FIXME when client send a frame > buffer_size can not hold
+    // current frame remaining data, the connection will hang, should log an error
     payload = ngx_http_websockify_decode_hybi(buf, size, b->last , free_size,
               &opcode, &left, ctx->encoding_protocol);
 
