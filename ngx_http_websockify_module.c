@@ -17,10 +17,11 @@
 
 #include <ngx_sha1.h>
 
-#define HYBI_GUID               "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-#define HYBI10_ACCEPTHDRLEN     29
+#define HYBI_GUID                "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+#define HYBI10_ACCEPTHDRLEN      29
 
-#define BUFFER_SIZE             32768
+#define MAX_WEBSOCKET_FRAME_SIZE 65535
+#define BUFFER_SIZE              (MAX_WEBSOCKET_FRAME_SIZE + 4)
 
 static ngx_int_t ngx_http_websockify_handler(ngx_http_request_t *r);
 static char *ngx_http_websockify(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -45,6 +46,9 @@ static ssize_t ngx_http_websockify_send_with_encode(ngx_connection_t *c,
         u_char *buf, const size_t size);
 static ssize_t ngx_http_websockify_send_with_decode(ngx_connection_t *c,
         u_char *buf, const size_t size);
+
+static ssize_t
+ngx_http_websockify_empty_recv(ngx_connection_t *c, u_char *buf, size_t size);
 
 #ifdef _MSC_VER
 #define WEBSOCKIFY_FUNC __FUNCTION__
@@ -88,17 +92,14 @@ ngx_module_t ngx_http_websockify_module;
 
 
 // {{{ code from websockify.c
+// TODO reforge
 static ssize_t
 ngx_http_websockify_encode_hybi(u_char *src, size_t srclength,
                                 u_char *target, size_t targsize, unsigned int opcode,
                                 websockify_encoding_protocol_e encoding_protocol)
 {
-    size_t b64_sz;
+    size_t       b64_sz;
     unsigned int payload_offset = 2;
-
-    if ((int)srclength <= 0) {
-        return 0;
-    }
 
     if (encoding_protocol == WEBSOCKIFY_ENCODING_PROTOCOL_BASE64) {
         b64_sz = ngx_base64_encoded_length(srclength);
@@ -111,12 +112,13 @@ ngx_http_websockify_encode_hybi(u_char *src, size_t srclength,
     if (b64_sz <= 125) {
         target[1] = (char) b64_sz;
         payload_offset = 2;
-    } else if ((b64_sz > 125) && (b64_sz < 65536)) {
+        // } else if ((b64_sz > 125) && (b64_sz <= MAX_WEBSOCKET_FRAME_SIZE)) {
+        // guarantee by caller
+    } else {
         target[1] = (char) 126;
         *(u_short *)&(target[2]) = htons((u_short)b64_sz);
         payload_offset = 4;
     }
-    // TODO return fail or trim
 
     if (encoding_protocol == WEBSOCKIFY_ENCODING_PROTOCOL_BASE64) {
         ngx_str_t b64src;
@@ -136,6 +138,7 @@ ngx_http_websockify_encode_hybi(u_char *src, size_t srclength,
     return b64_sz + payload_offset;
 }
 
+// TODO reforge and clean up
 static ssize_t
 ngx_http_websockify_decode_hybi(unsigned char *src, size_t srclength,
                                 u_char *target, size_t targsize,
@@ -379,23 +382,22 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf,
         return NGX_AGAIN;
     }
 
-    consumed_size = ngx_min( (free_size - 4) / 4 * 3 - 2, size);
+    free_size = ngx_min(free_size, MAX_WEBSOCKET_FRAME_SIZE + 4);
 
     // TODO clean up code it is UGLY
     // TODO 1 for text frame 2 for binary is now hardcode
+    // TODO make websock opcode const instead of hardcode
     if (ctx->encoding_protocol == WEBSOCKIFY_ENCODING_PROTOCOL_BASE64) {
+
+        // inverse of ngx_base64_encoded_length.
+        // (free_size - 4) is the max size for frame body.
+        consumed_size = ngx_min( (free_size - 4) / 4 * 3 - 2, size);
         payload = ngx_http_websockify_encode_hybi(buf, consumed_size, b->last ,
                   free_size , 1, ctx->encoding_protocol);
     } else {
+        consumed_size = ngx_min( free_size - 4, size);
         payload = ngx_http_websockify_encode_hybi(buf, consumed_size, b->last ,
                   free_size , 2, ctx->encoding_protocol);
-    }
-
-
-    // TODO cleanup cant happen
-    if (payload < 0) {
-        ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: encode error! ", WEBSOCKIFY_FUNC);
-        return NGX_ERROR;
     }
 
     b->last += payload; // push encoded data into buffer
