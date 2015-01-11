@@ -39,7 +39,7 @@ Uasge
 Options
 -------
 
-  * `websockify_buffer_size`:  Default: `65535 + 4 (websocket max frame size + header)`
+  * `websockify_buffer_size`:  Default: `65543 = 65535 + 4 + 4 (websocket max frame size + header + mask)`
 
     The buffer size used to store the encode/decode data.
     each websockify connection will cost `websockify_buffer_size` * 2 ( 1 upstream + 1 downstream ) addational memory

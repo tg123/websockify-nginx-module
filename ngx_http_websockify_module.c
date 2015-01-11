@@ -7,7 +7,7 @@
   *
   * Copyright (C) Boshi Lian, Hao Chen
   *
-  * Copyright (C) 2014
+  * Copyright (C) 2014 - 2015
   *
   */
 
@@ -21,7 +21,15 @@
 #define HYBI10_ACCEPTHDRLEN      29
 
 #define MAX_WEBSOCKET_FRAME_SIZE 65535
-#define BUFFER_SIZE              (MAX_WEBSOCKET_FRAME_SIZE + 4)
+#define BUFFER_SIZE              (MAX_WEBSOCKET_FRAME_SIZE + 4 + 4)
+
+#define BUFFER_FLUSH_TIMEOUT     20
+
+#ifdef _MSC_VER
+#define WEBSOCKIFY_FUNC __FUNCTION__
+#else
+#define WEBSOCKIFY_FUNC __func__
+#endif
 
 static ngx_int_t ngx_http_websockify_handler(ngx_http_request_t *r);
 static char *ngx_http_websockify(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -47,14 +55,8 @@ static ssize_t ngx_http_websockify_send_with_encode(ngx_connection_t *c,
 static ssize_t ngx_http_websockify_send_with_decode(ngx_connection_t *c,
         u_char *buf, const size_t size);
 
-static ssize_t
-ngx_http_websockify_empty_recv(ngx_connection_t *c, u_char *buf, size_t size);
-
-#ifdef _MSC_VER
-#define WEBSOCKIFY_FUNC __FUNCTION__
-#else
-#define WEBSOCKIFY_FUNC __func__
-#endif
+static ssize_t ngx_http_websockify_empty_recv(ngx_connection_t *c, u_char *buf,
+        size_t size);
 
 
 typedef struct ngx_http_websockify_loc_conf_s {
@@ -330,7 +332,7 @@ ngx_http_websockify_send_buffer(ngx_connection_t *c, ngx_buf_t *b,
 
         if (n == NGX_AGAIN) {
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: add timer", WEBSOCKIFY_FUNC);
-            ngx_add_timer(&(ctx->buf_cleanup_ev), 20); // TODO hardcode
+            ngx_add_timer(&(ctx->buf_cleanup_ev), BUFFER_FLUSH_TIMEOUT);
         }
 
         if ( (n <= 0) || (b->pos == b->last) ) {
@@ -732,8 +734,8 @@ ngx_http_websockify_handler(ngx_http_request_t *r)
     }
 
     ctx->request = r;
-    ctx->encode_send_buf = ngx_create_temp_buf(r->pool, 2 * u->conf->buffer_size);
-    ctx->decode_send_buf = ngx_create_temp_buf(r->pool, 2 * u->conf->buffer_size);
+    ctx->encode_send_buf = ngx_create_temp_buf(r->pool, u->conf->buffer_size);
+    ctx->decode_send_buf = ngx_create_temp_buf(r->pool, u->conf->buffer_size);
 
     ctx->encoding_protocol = WEBSOCKIFY_ENCODING_PROTOCOL_UNSET;
 
