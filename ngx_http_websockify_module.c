@@ -45,6 +45,7 @@ typedef enum {
 typedef struct ngx_http_websockify_request_ctx_s {
     ngx_http_request_t                *request;
     ngx_flag_t                         need_cleanup_fake_recv_buff;
+    ngx_flag_t                         closed;
     websockify_encoding_protocol_e     encoding_protocol;
 
     ngx_buf_t                         *encode_send_buf;
@@ -86,10 +87,15 @@ static ngx_inline ssize_t ngx_http_websockify_flush_downstream(
 static ngx_inline ssize_t ngx_http_websockify_flush_upstream(
     ngx_http_websockify_ctx_t *ctx);
 
-static ssize_t ngx_http_websockify_send_with_encode(ngx_connection_t *c,
-        u_char *buf, const size_t size);
-static ssize_t ngx_http_websockify_send_with_decode(ngx_connection_t *c,
-        u_char *buf, const size_t size);
+static ssize_t ngx_http_websockify_send_downstream_with_encode(
+    ngx_connection_t *c,
+    u_char *buf, const size_t size);
+static ssize_t ngx_http_websockify_send_downstream_frame(
+    ngx_http_websockify_ctx_t *ctx, u_char opcode, u_char *payload, size_t size);
+
+static ssize_t ngx_http_websockify_send_upstream_with_decode(
+    ngx_connection_t *c,
+    u_char *buf, const size_t size);
 
 static ssize_t ngx_http_websockify_empty_recv(ngx_connection_t *c, u_char *buf,
         size_t size);
@@ -180,8 +186,50 @@ ngx_http_websockify_send(ngx_connection_t *c, ngx_buf_t *b,
 }
 
 static ssize_t
-ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf,
-                                     const size_t size)
+ngx_http_websockify_send_downstream_frame(ngx_http_websockify_ctx_t *ctx,
+        u_char opcode, u_char *payload, size_t size)
+{
+    ngx_buf_t          *b;
+    size_t              free_size;
+    size_t              header_length;
+
+
+    if (ctx->closed) {
+        return websocket_server_encoded_length(size);
+    }
+
+    if (ngx_http_websockify_flush_downstream(ctx) == NGX_ERROR ) {
+        return NGX_ERROR;
+    }
+
+    b = ctx->encode_send_buf;
+    free_size = b->end - b->last;
+
+    header_length  = websocket_server_encoded_header_length(size);
+
+    if (free_size < (header_length + size)) {
+        return NGX_AGAIN;
+    }
+
+    websocket_server_write_frame_header(b->last, opcode, size);
+
+    if (size > 0) {
+        ngx_memcpy(b->last + header_length, payload, size);
+    }
+
+    if (ngx_http_websockify_flush_downstream(ctx) == NGX_ERROR ) {
+        return NGX_ERROR;
+    }
+
+    b->last += header_length + size;
+
+    return header_length + size;
+}
+
+static ssize_t
+ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
+        u_char *buf,
+        const size_t size)
 {
     ngx_http_websockify_ctx_t       *ctx;
     ngx_buf_t                       *b;
@@ -199,6 +247,11 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf,
     r = c->data;
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
 
+    // should not send anything to client
+    if (ctx->closed) {
+        return size;
+    }
+
     // make more buf
     if (ngx_http_websockify_flush_downstream(ctx) == NGX_ERROR ) {
         return NGX_ERROR;
@@ -215,13 +268,10 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf,
 
     free_size = ngx_min(free_size, MAX_WEBSOCKET_FRAME_SIZE + 4);
 
-    // TODO clean up code it is UGLY
-    // TODO 1 for text frame 2 for binary is now hardcode
-    // TODO make websock opcode const instead of hardcode
+    // TODO clean up code, UGLY
     if (ctx->encoding_protocol == WEBSOCKIFY_ENCODING_PROTOCOL_BASE64) {
 
         // inverse of ngx_base64_encoded_length.
-        // (free_size - 4) is the max size for frame body.
         consumed_size  = ngx_min( (free_size - MAX_WEBSOCKET_FRAME_HEADER_SIZE) / 4 * 3
                                   - 2, size);
 
@@ -264,8 +314,8 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf,
 }
 
 static ssize_t
-ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf,
-                                     const size_t size)
+ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
+        const size_t size)
 {
     ngx_http_websockify_ctx_t       *ctx;
     ngx_buf_t                       *b;
@@ -274,6 +324,8 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf,
 
     size_t                           free_size;
     ssize_t                          header_length;
+    size_t                           used_buf_size;
+    ssize_t                          reply;
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: [%d]", WEBSOCKIFY_FUNC,
                    size);
@@ -293,7 +345,8 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf,
     header_length = websocket_server_decode_next_frame(&frame, buf, size);
 
     if (header_length == NGX_ERROR) {
-        ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: decode websocket frame error! ",
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                      "%s: decoding websocket frame > 65535 is not supported!",
                       WEBSOCKIFY_FUNC);
         return NGX_ERROR;
     }
@@ -302,12 +355,12 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf,
         return NGX_AGAIN;
     }
 
-    size_t used_buf_size;
+    used_buf_size = 0;
 
     switch (frame.opcode) {
     case WEBSOCKET_OPCODE_CONTINUATION:
+    case WEBSOCKET_OPCODE_PONG:
         // do nothing
-        used_buf_size = 0;
         break;
 
     case WEBSOCKET_OPCODE_TEXT:
@@ -332,8 +385,7 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf,
 
             if ( ngx_decode_base64(&dst, &src) != NGX_OK ) {
                 ngx_log_error(NGX_LOG_ERR, c->log, 0,
-                              "%s: decode websocket base64 frame error! not base64 payload",
-                              WEBSOCKIFY_FUNC);
+                              "%s: decode websocket base64 frame payload error!", WEBSOCKIFY_FUNC);
                 return NGX_ERROR;
             }
 
@@ -354,10 +406,41 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf,
         break;
 
     case WEBSOCKET_OPCODE_CLOSE:
+        // TODO testcases
+        // TODO status code hardcoded (1000 = 03e8)
+        // TODO connection should be closed
+        reply = ngx_http_websockify_send_downstream_frame(ctx, WEBSOCKET_OPCODE_CLOSE,
+                (u_char *)"\x03\xe8 Closed", 9);
+
+        if (reply < 0) {
+            return reply;
+        }
+
+        ctx->closed = 1;
+
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: CLOSE replied [%d]",
+                       WEBSOCKIFY_FUNC,
+                       size);
+
+        break;
+
     case WEBSOCKET_OPCODE_PING:
-    case WEBSOCKET_OPCODE_PONG:
+        reply = ngx_http_websockify_send_downstream_frame(ctx, WEBSOCKET_OPCODE_PONG,
+                frame.payload, frame.payload_length);
+
+        if (reply < 0) {
+            return reply;
+        }
+
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: PING replied [%d]",
+                       WEBSOCKIFY_FUNC,
+                       size);
+
+        break;
+
     default:
-        // TODO impl respone to those opcode
+        ngx_log_error(NGX_LOG_ALERT, c->log, 0, "%s: unsupported opcode: [%d] ",
+                      WEBSOCKIFY_FUNC, frame.opcode);
         break;
     }
 
@@ -629,6 +712,8 @@ ngx_http_websockify_handler(ngx_http_request_t *r)
     ctx->flush_all_ev.data    = ctx;
     ctx->flush_all_ev.handler = ngx_http_websockify_flush_all;
 
+    ctx-> closed = 0;
+
     if (!ctx->encode_send_buf || !ctx->decode_send_buf) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -703,7 +788,6 @@ ngx_http_websockify_reinit_request(ngx_http_request_t *r)
     }
 
     u = r->upstream;
-
     // hack for empty reply tcp connection
     ctx->original_ngx_upstream_recv = u->peer.connection->recv;
     u->peer.connection->recv = ngx_http_websockify_empty_recv;
@@ -837,15 +921,16 @@ ngx_http_websockify_process_header(ngx_http_request_t *r)
         u->state->status = u->headers_in.status_n;
         u->upgrade = 1;
 
-        if ( r->connection->send != ngx_http_websockify_send_with_encode ) {
+        if ( r->connection->send != ngx_http_websockify_send_downstream_with_encode ) {
             ctx->original_ngx_downstream_send = r->connection->send;
-            r->connection->send = ngx_http_websockify_send_with_encode;
+            r->connection->send = ngx_http_websockify_send_downstream_with_encode;
         }
 
         if ( r->upstream->peer.connection->send !=
-             ngx_http_websockify_send_with_decode ) {
+             ngx_http_websockify_send_upstream_with_decode ) {
             ctx->original_ngx_upstream_send = r->upstream->peer.connection->send;
-            r->upstream->peer.connection->send = ngx_http_websockify_send_with_decode;
+            r->upstream->peer.connection->send =
+                ngx_http_websockify_send_upstream_with_decode;
         }
 
 
