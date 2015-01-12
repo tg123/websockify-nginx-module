@@ -19,7 +19,7 @@
 
 #include "websocket.h"
 
-#define BUFFER_SIZE              (MAX_WEBSOCKET_FRAME_SIZE + 4 + 4)
+#define BUFFER_SIZE              (MAX_WEBSOCKET_FRAME_SIZE + MAX_WEBSOCKET_FRAME_HEADER_SIZE + WEBSOCKET_FRAME_MASK_SIZE)
 
 #define BUFFER_FLUSH_TIMEOUT     20
 
@@ -28,34 +28,6 @@
 #else
 #define WEBSOCKIFY_FUNC __func__
 #endif
-
-static ngx_int_t ngx_http_websockify_handler(ngx_http_request_t *r);
-static char *ngx_http_websockify(ngx_conf_t *cf, ngx_command_t *cmd,
-                                 void *conf);
-
-static void *ngx_http_websockify_create_loc_conf(ngx_conf_t *cf);
-static char *ngx_http_websockify_merge_loc_conf(ngx_conf_t *cf, void *parent,
-        void *child);
-
-static ngx_int_t ngx_http_websockify_create_request(ngx_http_request_t *r);
-static ngx_int_t ngx_http_websockify_reinit_request(ngx_http_request_t *r);
-static ngx_int_t ngx_http_websockify_process_header(ngx_http_request_t *r);
-static void ngx_http_websockify_abort_request(ngx_http_request_t *r);
-static void ngx_http_websockify_finalize_request(ngx_http_request_t *r,
-        ngx_int_t rc);
-
-
-static void ngx_http_websockify_flush_all(ngx_event_t *ev);
-static ssize_t ngx_http_websockify_send(ngx_connection_t *c,
-                                        ngx_buf_t *b, ngx_send_pt send);
-static ssize_t ngx_http_websockify_send_with_encode(ngx_connection_t *c,
-        u_char *buf, const size_t size);
-static ssize_t ngx_http_websockify_send_with_decode(ngx_connection_t *c,
-        u_char *buf, const size_t size);
-
-static ssize_t ngx_http_websockify_empty_recv(ngx_connection_t *c, u_char *buf,
-        size_t size);
-
 
 typedef struct ngx_http_websockify_loc_conf_s {
     ngx_http_upstream_conf_t       upstream;
@@ -90,127 +62,38 @@ typedef struct ngx_http_websockify_request_ctx_s {
 
 ngx_module_t ngx_http_websockify_module;
 
+static ngx_int_t ngx_http_websockify_handler(ngx_http_request_t *r);
+static char *ngx_http_websockify(ngx_conf_t *cf, ngx_command_t *cmd,
+                                 void *conf);
 
-// {{{ code from websockify.c
+static void *ngx_http_websockify_create_loc_conf(ngx_conf_t *cf);
+static char *ngx_http_websockify_merge_loc_conf(ngx_conf_t *cf, void *parent,
+        void *child);
 
-// TODO reforge and clean up
-static ssize_t
-ngx_http_websockify_decode_hybi(u_char *src, size_t srclength,
-                                u_char *target, size_t targsize,
-                                unsigned int *opcode, unsigned int *left,
-                                websockify_encoding_protocol_e encoding_protocol)
-{
-    u_char       *frame, *mask, *payload;
-    int           masked = 0;
-    size_t        i = 0, len;
-    size_t        remaining = 0;
-    unsigned int  target_offset = 0, hdr_length = 0, payload_length = 0;
-
-    *left = srclength;
-    frame = src;
-
-    for (;;) {
-        // Need at least two bytes of the header
-        // Find beginning of next frame. First time hdr_length, masked and
-        // payload_length are zero
-        frame += hdr_length + 4 * masked + payload_length;
-
-        if (frame > src + srclength) {
-            break;
-        }
-
-        remaining = (src + srclength) - frame;
-
-        // Truncated frame header from client
-        if (remaining < 2) {
-            break;
-        }
-
-        *opcode = frame[0] & 0x0f;
-        // TODO clean up must be true (designed for recv form client only)
-        masked = (frame[1] & 0x80) >> 7;
-
-        if (*opcode == 0x8) {
-            // client sent orderly close frame
-            break;
-        }
-
-        payload_length = frame[1] & 0x7f;
-        if (payload_length < 126) {
-            hdr_length = 2;
-            //frame += 2 * sizeof(char);
-        } else if (payload_length == 126) {
-            payload_length = (frame[2] << 8) + frame[3];
-            hdr_length = 4;
-        } else {
-            // Receiving frames larger than 65535 bytes not supported
-            // TODO log
-            return NGX_ERROR;
-        }
-
-        if ((hdr_length + 4 * masked + payload_length) > remaining) {
-            continue;
-        }
-
-        payload = frame + hdr_length + 4 * masked;
-
-        // TODO do some respone to opcode like ping
-        if (*opcode != 1 && *opcode != 2) {
-            continue;
-        }
-
-        // Ignoring empty frame
-        if (payload_length == 0) {
-            continue;
-        }
-
-        // Received unmasked payload from client
-        if ((payload_length > 0) && (!masked)) {
-            return NGX_ERROR;
-        }
-
-        // unmask the data
-        mask = payload - 4;
-        for (i = 0; i < payload_length; i++) {
-            payload[i] ^= mask[i % 4];
-        }
+static ngx_int_t ngx_http_websockify_create_request(ngx_http_request_t *r);
+static ngx_int_t ngx_http_websockify_reinit_request(ngx_http_request_t *r);
+static ngx_int_t ngx_http_websockify_process_header(ngx_http_request_t *r);
+static void ngx_http_websockify_abort_request(ngx_http_request_t *r);
+static void ngx_http_websockify_finalize_request(ngx_http_request_t *r,
+        ngx_int_t rc);
 
 
-        if (encoding_protocol == WEBSOCKIFY_ENCODING_PROTOCOL_BASE64) {
-            ngx_str_t b64src;
-            ngx_str_t b64dst;
+static ssize_t ngx_http_websockify_send(ngx_connection_t *c, ngx_buf_t *b,
+                                        ngx_send_pt send);
+static void ngx_http_websockify_flush_all(ngx_event_t *ev);
+static ngx_inline ssize_t ngx_http_websockify_flush_downstream(
+    ngx_http_websockify_ctx_t *ctx);
+static ngx_inline ssize_t ngx_http_websockify_flush_upstream(
+    ngx_http_websockify_ctx_t *ctx);
 
-            // base64 decode the data
-            if ( target_offset + ngx_base64_decoded_length(payload_length) > targsize ) {
-                break;
-            }
+static ssize_t ngx_http_websockify_send_with_encode(ngx_connection_t *c,
+        u_char *buf, const size_t size);
+static ssize_t ngx_http_websockify_send_with_decode(ngx_connection_t *c,
+        u_char *buf, const size_t size);
 
-            b64src.data = payload;
-            b64src.len = payload_length;
+static ssize_t ngx_http_websockify_empty_recv(ngx_connection_t *c, u_char *buf,
+        size_t size);
 
-            b64dst.data = target + target_offset;
-
-            if ( ngx_decode_base64(&b64dst, &b64src) != NGX_OK ) {
-                return NGX_ERROR;
-            }
-
-            len = b64dst.len;
-
-        } else {
-
-            ngx_memcpy(target + target_offset, payload, payload_length);
-            len = payload_length;
-        }
-
-        target_offset += len;
-    }
-
-
-    *left = remaining;
-    return target_offset;
-}
-
-//}}}
 
 
 static ngx_inline ssize_t
@@ -303,8 +186,8 @@ ngx_http_websockify_send_with_encode(ngx_connection_t *c, u_char *buf,
     ngx_http_websockify_ctx_t       *ctx;
     ngx_buf_t                       *b;
     ngx_http_request_t              *r;
-    ssize_t                          payload_length;
-    ssize_t                          header_length;
+    size_t                           payload_length;
+    size_t                           header_length;
 
     size_t                           free_size;
     size_t                           consumed_size = 0;
@@ -387,66 +270,104 @@ ngx_http_websockify_send_with_decode(ngx_connection_t *c, u_char *buf,
     ngx_http_websockify_ctx_t       *ctx;
     ngx_buf_t                       *b;
     ngx_http_request_t              *r;
-    ssize_t                          n;
+    websocket_frame_t                frame;
 
     size_t                           free_size;
-    unsigned int                     opcode = 0, left;
-    ssize_t                          payload;
+    ssize_t                          header_length;
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: [%d]", WEBSOCKIFY_FUNC,
                    size);
-
 
     r = c->data;
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
 
     b = ctx->decode_send_buf;
 
-    if ( b-> pos < b->last ) {
-        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: old buff not clean...[%d]",
-                       WEBSOCKIFY_FUNC, b->last - b->pos);
-
-        n = ngx_http_websockify_send(c, b, ctx->original_ngx_upstream_send);
-        if ( n == NGX_ERROR ) {
-            return NGX_ERROR;
-        }
+    // make more buf
+    if (ngx_http_websockify_flush_upstream(ctx) == NGX_ERROR ) {
+        return NGX_ERROR;
     }
 
     free_size = b->end - b->last;
 
-    if (free_size <= 10) {
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
-                       "%s: no enough buffer, try again... ", WEBSOCKIFY_FUNC);
-        return NGX_AGAIN;
-    }
+    header_length = websocket_server_decode_next_frame(&frame, buf, size);
 
-
-    // FIXME when client send a frame > buffer_size can not hold
-    // current frame remaining data, the connection will hang, should log an error
-    payload = ngx_http_websockify_decode_hybi(buf, size, b->last , free_size,
-              &opcode, &left, ctx->encoding_protocol);
-
-    if ( opcode == 8) { // client closed
-        // todo close upstream
-        return size;
-    }
-
-    if (payload == 0) {
-        return NGX_AGAIN;
-
-    } else if (payload < 0) {
-        ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: decode error! ", WEBSOCKIFY_FUNC);
+    if (header_length == NGX_ERROR) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: decode websocket frame error! ",
+                      WEBSOCKIFY_FUNC);
         return NGX_ERROR;
     }
 
-    b->last += payload; // push decoded data into buffer
+    if (header_length == NGX_AGAIN) {
+        return NGX_AGAIN;
+    }
 
-    n = ngx_http_websockify_send(c, b, ctx->original_ngx_upstream_send);
-    if ( n == NGX_ERROR ) {
+    size_t used_buf_size;
+
+    switch (frame.opcode) {
+    case WEBSOCKET_OPCODE_CONTINUATION:
+        // do nothing
+        used_buf_size = 0;
+        break;
+
+    case WEBSOCKET_OPCODE_TEXT:
+    case WEBSOCKET_OPCODE_BINARY:
+        // FIXME when client send a frame > buffer_size can not hold
+        // current frame remaining data, the connection will hang, should log an error
+
+        if (ctx->encoding_protocol == WEBSOCKIFY_ENCODING_PROTOCOL_BASE64) {
+            ngx_str_t src;
+            ngx_str_t dst;
+
+            // base64 decode the data
+            if ( ngx_base64_decoded_length(frame.payload_length) > free_size ) {
+                return NGX_AGAIN;
+            }
+
+            websocket_server_decode_unmask_payload(&frame);
+            src.data = frame.payload;
+            src.len =  frame.payload_length;
+
+            dst.data = b->last;
+
+            if ( ngx_decode_base64(&dst, &src) != NGX_OK ) {
+                ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                              "%s: decode websocket base64 frame error! not base64 payload",
+                              WEBSOCKIFY_FUNC);
+                return NGX_ERROR;
+            }
+
+            used_buf_size = dst.len;
+
+        } else {
+
+            if ( frame.payload_length > free_size ) {
+                return NGX_AGAIN;
+            }
+
+            websocket_server_decode_unmask_payload(&frame);
+            ngx_memcpy(b->last, frame.payload, frame.payload_length);
+
+            used_buf_size = frame.payload_length;
+        }
+
+        break;
+
+    case WEBSOCKET_OPCODE_CLOSE:
+    case WEBSOCKET_OPCODE_PING:
+    case WEBSOCKET_OPCODE_PONG:
+    default:
+        // TODO impl respone to those opcode
+        break;
+    }
+
+    b->last += used_buf_size; // push decoded data into buffer
+
+    if (ngx_http_websockify_flush_upstream(ctx) == NGX_ERROR ) {
         return NGX_ERROR;
     }
 
-    return (ssize_t)(size - left);
+    return (ssize_t)(header_length + frame.payload_length);
 }
 
 static ngx_command_t ngx_http_websockify_commands[] = {

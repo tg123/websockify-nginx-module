@@ -1,4 +1,5 @@
 ngx_addon_name=ngx_http_websockify_module
 HTTP_AUX_FILTER_MODULES="$HTTP_AUX_FILTER_MODULES ngx_http_websockify_module"
 NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_websockify_module.c"
+NGX_ADDON_DEPS="$NGX_ADDON_DEPS $ngx_addon_dir/websocket.h"
 CORE_LIBS="$CORE_LIBS"

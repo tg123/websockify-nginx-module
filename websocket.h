@@ -57,6 +57,7 @@ typedef struct websocket_frame_s {
     u_char     opcode;
     size_t     payload_length;
 
+    u_char    *mask;
     u_char    *payload;
 } websocket_frame_t;
 
@@ -68,6 +69,8 @@ typedef struct websocket_frame_s {
 // for server encode only
 #define websocket_server_encoded_header_length(size)  (((size) <= 125) ? (MIN_WEBSOCKET_FRAME_HEADER_SIZE) : (MAX_WEBSOCKET_FRAME_HEADER_SIZE))
 #define websocket_server_encoded_length(size)         (websocket_server_encoded_header_length(size) + size)
+
+#define websocket_server_decoded_header_length(size)  (websocket_server_encoded_header_length(size) + WEBSOCKET_FRAME_MASK_SIZE)
 
 // 1 char frame
 #define MIN_SERVER_FRAME_BASE64_SIZE (websocket_server_encoded_header_length(1) + ngx_base64_encoded_length(1))
@@ -84,6 +87,52 @@ websocket_server_write_frame_header(u_char *dst, u_char opcode,
     } else {
         dst[1] = (u_char) 126;
         *(u_short *)&(dst[2]) = htons((u_short)(payload_length));
+    }
+}
+
+static ngx_inline ssize_t
+websocket_server_decode_next_frame(websocket_frame_t *frame, u_char *src,
+                                   size_t size)
+{
+    size_t     header_length;
+    size_t     payload_length;
+
+    if (size < MIN_WEBSOCKET_FRAME_HEADER_SIZE) {
+        return NGX_AGAIN;
+    }
+
+    frame->opcode = src[0] & 0x0F;
+
+    payload_length = src[1] & 0x7F;
+
+    if (payload_length == 126) {
+        payload_length = (src[2] << 8) + src[3];
+    } else if (payload_length == 127) {
+        // only max frame payload 65535 support at this time
+        return NGX_ERROR;
+    }
+
+    frame->payload_length = payload_length;
+
+    header_length = websocket_server_decoded_header_length(payload_length);
+
+    // no enough body
+    if (header_length + payload_length > size) {
+        return NGX_AGAIN;
+    }
+
+    frame->mask    = src + header_length - WEBSOCKET_FRAME_MASK_SIZE;
+    frame->payload = src + header_length;
+
+    return header_length;
+}
+
+static ngx_inline void
+websocket_server_decode_unmask_payload(websocket_frame_t *frame)
+{
+    size_t     i;
+    for (i = 0; i < frame->payload_length; i++) {
+        frame->payload[i] ^= frame->mask[i % 4];
     }
 }
 
