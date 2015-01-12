@@ -79,17 +79,23 @@ static void ngx_http_websockify_finalize_request(ngx_http_request_t *r,
         ngx_int_t rc);
 
 
+static void ngx_http_websockify_flush_all(ngx_event_t *ev);
+
 static ssize_t ngx_http_websockify_send(ngx_connection_t *c, ngx_buf_t *b,
                                         ngx_send_pt send);
-static void ngx_http_websockify_flush_all(ngx_event_t *ev);
+
 static ngx_inline ssize_t ngx_http_websockify_flush_downstream(
     ngx_http_websockify_ctx_t *ctx);
 static ngx_inline ssize_t ngx_http_websockify_flush_upstream(
     ngx_http_websockify_ctx_t *ctx);
 
+static ngx_inline size_t ngx_http_websockify_freesize(ngx_buf_t *b,
+        size_t size);
+
 static ssize_t ngx_http_websockify_send_downstream_with_encode(
     ngx_connection_t *c,
     u_char *buf, const size_t size);
+
 static ssize_t ngx_http_websockify_send_downstream_frame(
     ngx_http_websockify_ctx_t *ctx, u_char opcode, u_char *payload, size_t size);
 
@@ -101,6 +107,19 @@ static ssize_t ngx_http_websockify_empty_recv(ngx_connection_t *c, u_char *buf,
         size_t size);
 
 
+static ngx_inline size_t ngx_http_websockify_freesize(ngx_buf_t *b, size_t size)
+{
+
+    size_t    free_size;
+
+    free_size = b->end - b->last;
+
+    if (free_size >= size) {
+        return free_size;
+    }
+
+    return 0;
+}
 
 static ngx_inline ssize_t
 ngx_http_websockify_flush_downstream(ngx_http_websockify_ctx_t *ctx)
@@ -190,7 +209,6 @@ ngx_http_websockify_send_downstream_frame(ngx_http_websockify_ctx_t *ctx,
         u_char opcode, u_char *payload, size_t size)
 {
     ngx_buf_t          *b;
-    size_t              free_size;
     size_t              header_length;
 
 
@@ -202,12 +220,11 @@ ngx_http_websockify_send_downstream_frame(ngx_http_websockify_ctx_t *ctx,
         return NGX_ERROR;
     }
 
-    b = ctx->encode_send_buf;
-    free_size = b->end - b->last;
-
     header_length  = websocket_server_encoded_header_length(size);
 
-    if (free_size < (header_length + size)) {
+    b = ctx->encode_send_buf;
+
+    if ( !ngx_http_websockify_freesize(b, (header_length + size))) {
         return NGX_AGAIN;
     }
 
@@ -258,15 +275,16 @@ ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
     }
 
     b = ctx->encode_send_buf;
-    free_size = b->end - b->last;
+    free_size = ngx_http_websockify_freesize(b, MIN_SERVER_FRAME_SIZE);
 
-    if (free_size <= MIN_SERVER_FRAME_SIZE) {
+    if ( !free_size ) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                        "%s: no enough buffer, try again... ", WEBSOCKIFY_FUNC);
         return NGX_AGAIN;
     }
 
-    free_size = ngx_min(free_size, MAX_WEBSOCKET_FRAME_SIZE + 4);
+    free_size = ngx_min(free_size,
+                        MAX_WEBSOCKET_FRAME_SIZE + MAX_WEBSOCKET_FRAME_HEADER_SIZE);
 
     // TODO clean up code, UGLY
     if (ctx->encoding_protocol == WEBSOCKIFY_ENCODING_PROTOCOL_BASE64) {
@@ -322,7 +340,6 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
     ngx_http_request_t              *r;
     websocket_frame_t                frame;
 
-    size_t                           free_size;
     ssize_t                          header_length;
     size_t                           used_buf_size;
     ssize_t                          reply;
@@ -339,8 +356,6 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
     if (ngx_http_websockify_flush_upstream(ctx) == NGX_ERROR ) {
         return NGX_ERROR;
     }
-
-    free_size = b->end - b->last;
 
     header_length = websocket_server_decode_next_frame(&frame, buf, size);
 
@@ -373,11 +388,13 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
             ngx_str_t dst;
 
             // base64 decode the data
-            if ( ngx_base64_decoded_length(frame.payload_length) > free_size ) {
+            if ( !ngx_http_websockify_freesize(b,
+                                               ngx_base64_decoded_length(frame.payload_length)) ) {
                 return NGX_AGAIN;
             }
 
             websocket_server_decode_unmask_payload(&frame);
+
             src.data = frame.payload;
             src.len =  frame.payload_length;
 
@@ -393,11 +410,12 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
 
         } else {
 
-            if ( frame.payload_length > free_size ) {
+            if ( !ngx_http_websockify_freesize(b, frame.payload_length) ) {
                 return NGX_AGAIN;
             }
 
             websocket_server_decode_unmask_payload(&frame);
+
             ngx_memcpy(b->last, frame.payload, frame.payload_length);
 
             used_buf_size = frame.payload_length;
@@ -425,6 +443,16 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
         break;
 
     case WEBSOCKET_OPCODE_PING:
+
+        // TODO testcases
+
+        if ( !ngx_http_websockify_freesize(ctx->encode_send_buf,
+                                           websocket_server_encoded_length(frame.payload_length))) {
+            return NGX_AGAIN;
+        }
+
+        websocket_server_decode_unmask_payload(&frame);
+
         reply = ngx_http_websockify_send_downstream_frame(ctx, WEBSOCKET_OPCODE_PONG,
                 frame.payload, frame.payload_length);
 
