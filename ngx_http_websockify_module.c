@@ -839,9 +839,10 @@ ngx_http_websockify_process_header(ngx_http_request_t *r)
     ngx_table_elt_t             *h;
     ngx_list_part_t             *part;
     ngx_uint_t                   i;
-    ngx_sha1_t                   sha1;
-    ngx_str_t                    ws_key = {0, NULL};
 
+    ngx_sha1_t                   sha1;
+
+    ngx_str_t                    ws_key;
     ngx_flag_t                   accept_binary = 0;
     ngx_flag_t                   accept_base64 = 0;
 
@@ -878,29 +879,24 @@ ngx_http_websockify_process_header(ngx_http_request_t *r)
 
         if (ngx_strncasecmp(h[i].key.data, (u_char *) "Sec-WebSocket-Key",
                             h[i].key.len) == 0) {
-            ngx_str_t src;
+
+            ngx_str_t  src;
+            u_char     src_data[20];
 
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                            "websockify : found SEC_WEBSOCKET_KEY : %s", h[i].value.data);
 
-            src.data = ngx_palloc(r->pool, 20 * sizeof(u_char));
+            src.data = src_data;
             src.len = 20;
-
-            if (src.data == NULL) {
-                return NGX_ERROR;
-            }
 
             ngx_sha1_init(&sha1);
             ngx_sha1_update(&sha1, h[i].value.data, h[i].value.len);
             ngx_sha1_update(&sha1, HYBI_GUID, 36);
             ngx_sha1_final(src.data, &sha1);
 
-            ws_key.len = HYBI10_ACCEPTHDRLEN; //MAX ACCEPT
-            ws_key.data = ngx_palloc(r->pool, HYBI10_ACCEPTHDRLEN);
+            u_char ws_key_data[HYBI10_ACCEPTHDRLEN];
 
-            if ( ws_key.data == NULL) {
-                return NGX_ERROR;
-            }
+            ws_key.data = ws_key_data;
 
             ngx_encode_base64(&ws_key, &src);
 
@@ -950,13 +946,17 @@ ngx_http_websockify_process_header(ngx_http_request_t *r)
         u->upgrade = 1;
 
         if ( r->connection->send != ngx_http_websockify_send_downstream_with_encode ) {
+
             ctx->original_ngx_downstream_send = r->connection->send;
+
             r->connection->send = ngx_http_websockify_send_downstream_with_encode;
         }
 
         if ( r->upstream->peer.connection->send !=
              ngx_http_websockify_send_upstream_with_decode ) {
+
             ctx->original_ngx_upstream_send = r->upstream->peer.connection->send;
+
             r->upstream->peer.connection->send =
                 ngx_http_websockify_send_upstream_with_decode;
         }
