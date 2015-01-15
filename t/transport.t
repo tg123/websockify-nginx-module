@@ -5,7 +5,6 @@ use Test::Nginx::Socket;
 #use Test::More;
 use Scope::OnExit;
 
-
 my $XTcpServerPid;
 
 sub kill_tcp_server() {
@@ -49,6 +48,7 @@ add_block_preprocessor(sub {
                     my $buf;
                     $client->recv($buf, 4096);
                     last if not $client->send($buf);
+                    sleep 1;
                 }
             }
 
@@ -126,18 +126,19 @@ add_response_body_check(sub {
         $client->write($_);
 
         # recv
-        $socket->recv($buf, 32771); # max frame size
+        $socket->recv($buf, 65535 + 4 + 4); # max frame size
         $client->read($buf);
     }
 
     while ( @expect_resp ) {
-        $socket->recv($buf, 32771); # max frame size
+        $socket->recv($buf, 65535 + 4 + 4); # max frame size
         $client->read($buf);
         
     }
 });
 
-plan tests => 6;
+# a bit stupid 
+plan tests => 23;
 
 run_tests();
 
@@ -169,3 +170,14 @@ location /websockify {
 ["aGVsbG8=", "d29ybGQ="]
 
 
+=== TEST 3: big packet
+--- config
+location /websockify {
+    websockify_pass 127.0.0.1:5901;
+}
+--- websockify_url: /websockify
+--- x_tcp_listen: 5901
+--- websockify_frame_request eval
+["0" x 65535, "0"]
+--- websockify_frame_response eval
+[ ("0" x 4096) x 16 ]
