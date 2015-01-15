@@ -894,9 +894,7 @@ ngx_http_websockify_process_header(ngx_http_request_t *r)
             ngx_sha1_update(&sha1, HYBI_GUID, 36);
             ngx_sha1_final(src.data, &sha1);
 
-            u_char ws_key_data[HYBI10_ACCEPTHDRLEN];
-
-            ws_key.data = ws_key_data;
+            ws_key.data = ngx_palloc(r->pool, HYBI10_ACCEPTHDRLEN);
 
             ngx_encode_base64(&ws_key, &src);
 
