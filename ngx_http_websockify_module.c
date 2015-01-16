@@ -842,10 +842,9 @@ ngx_http_websockify_process_header(ngx_http_request_t *r)
 
     ngx_sha1_t                   sha1;
 
-    ngx_str_t                    ws_key;
+    ngx_str_t                    ws_key        = {0, NULL};
     ngx_flag_t                   accept_binary = 0;
     ngx_flag_t                   accept_base64 = 0;
-
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "websockify : ngx_http_websockify_process_header");
@@ -1024,6 +1023,7 @@ ngx_http_websockify(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_OK;
     }
 
+    ngx_memzero(&u, sizeof(ngx_url_t));
     u.url.data = url->data;
     u.url.len = url->len;
     u.default_port = 5900;
