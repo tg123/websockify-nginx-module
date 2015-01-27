@@ -290,8 +290,8 @@ ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
     if (ctx->encoding_protocol == WEBSOCKIFY_ENCODING_PROTOCOL_BASE64) {
 
         // inverse of ngx_base64_encoded_length.
-        consumed_size  = ngx_min( (free_size - MAX_WEBSOCKET_FRAME_HEADER_SIZE) / 4 * 3
-                                  - 2, size);
+        consumed_size  = ngx_min(websocket_payload_consume_size(free_size) / 4 * 3 - 2,
+                                 size);
 
         payload_length = ngx_base64_encoded_length(consumed_size);
         header_length  = websocket_server_encoded_header_length(payload_length);
@@ -311,7 +311,7 @@ ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
         ngx_encode_base64(&dst, &src);
 
     } else {
-        consumed_size = ngx_min( free_size - MAX_WEBSOCKET_FRAME_HEADER_SIZE, size);
+        consumed_size = ngx_min(websocket_payload_consume_size(free_size), size);
 
         payload_length = consumed_size;
         header_length  = websocket_server_encoded_header_length(payload_length);

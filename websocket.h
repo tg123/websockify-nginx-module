@@ -77,6 +77,8 @@ typedef struct websocket_frame_s {
 #define MIN_SERVER_FRAME_BINARY_SIZE (websocket_server_encoded_header_length(1) + 1)
 #define MIN_SERVER_FRAME_SIZE        (ngx_max(MIN_SERVER_FRAME_BASE64_SIZE, MIN_SERVER_FRAME_BINARY_SIZE))
 
+#define websocket_payload_consume_size(size)  ( (size) <= ( websocket_server_encoded_header_length(125) + 125 ) ? ( size - MIN_WEBSOCKET_FRAME_HEADER_SIZE ) : ( size - MAX_WEBSOCKET_FRAME_HEADER_SIZE) )
+
 static ngx_inline void
 websocket_server_write_frame_header(u_char *dst, u_char opcode,
                                     size_t payload_length)
