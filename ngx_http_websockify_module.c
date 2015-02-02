@@ -127,6 +127,10 @@ ngx_http_websockify_flush_downstream(ngx_http_websockify_ctx_t *ctx)
     ngx_http_request_t        *r;
     r = ctx->request;
 
+    if (ctx->closed) {
+        return NGX_ERROR;
+    }
+
     if ( r->connection ) {
         return ngx_http_websockify_send(r->connection, ctx->encode_send_buf,
                                         ctx->original_ngx_downstream_send);
@@ -212,9 +216,6 @@ ngx_http_websockify_send_downstream_frame(ngx_http_websockify_ctx_t *ctx,
     size_t              header_length;
 
 
-    if (ctx->closed) {
-        return websocket_server_encoded_length(size);
-    }
 
     if (ngx_http_websockify_flush_downstream(ctx) == NGX_ERROR ) {
         return NGX_ERROR;
@@ -263,11 +264,6 @@ ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
 
     r = c->data;
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
-
-    // should not send anything to client
-    if (ctx->closed) {
-        return size;
-    }
 
     // make more buf
     if (ngx_http_websockify_flush_downstream(ctx) == NGX_ERROR ) {
@@ -426,7 +422,6 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
     case WEBSOCKET_OPCODE_CLOSE:
         // TODO testcases
         // TODO status code hardcoded (1000 = 03e8)
-        // TODO connection should be closed
         reply = ngx_http_websockify_send_downstream_frame(ctx, WEBSOCKET_OPCODE_CLOSE,
                 (u_char *)"\x03\xe8 Closed", 9);
 
@@ -440,6 +435,7 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
                        WEBSOCKIFY_FUNC,
                        size);
 
+        return NGX_ERROR; // let ngx close connection
         break;
 
     case WEBSOCKET_OPCODE_PING:
