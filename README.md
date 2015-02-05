@@ -3,9 +3,6 @@ Websockify port for Nginx
 
 Embed the [Websockify](https://github.com/kanaka/websockify/) into Nginx
 
-some codes are borrowed from [Websockify C implementation](https://github.com/kanaka/websockify/tree/master/other)
-
-
 Installation
 ------------
     
@@ -36,8 +33,8 @@ Uasge
   1. port is your `nginx server`'s listening port
   1. Click connect
 
-Options
--------
+Directives
+----------
 
   * `websockify_buffer_size`:  Default: `65543 = 65535 + 4 + 4 (websocket max frame size + header + mask)`
 
@@ -63,5 +60,11 @@ Options
 Nginx Compatibility
 -------------------
 
- * 1.5.x (Tested on 1.5.9)
- * 1.4.x (Tested on 1.4.4)
+ * v0.02
+    * 1.7.x (Tested on 1.7.9)
+    * 1.6.x (Tested on 1.6.2)
+
+ * v0.01
+
+     * 1.5.x (Tested on 1.5.9)
+     * 1.4.x (Tested on 1.4.4)
