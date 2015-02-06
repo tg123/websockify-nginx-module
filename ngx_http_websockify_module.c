@@ -145,6 +145,10 @@ ngx_http_websockify_flush_upstream(ngx_http_websockify_ctx_t *ctx)
     ngx_http_request_t        *r;
     r = ctx->request;
 
+    if (ctx->closed) {
+        return NGX_ERROR;
+    }
+
     if ( r->upstream->peer.connection ) {
         return ngx_http_websockify_send(r->upstream->peer.connection,
                                         ctx->decode_send_buf, ctx->original_ngx_upstream_send);
@@ -713,15 +717,15 @@ ngx_http_websockify_handler(ngx_http_request_t *r)
 
     u->conf = &wlcf->upstream;
 
-    u->create_request = ngx_http_websockify_create_request;
-    u->reinit_request = ngx_http_websockify_reinit_request;
-    u->process_header = ngx_http_websockify_process_header;
-    u->abort_request = ngx_http_websockify_abort_request;
+    u->create_request   = ngx_http_websockify_create_request;
+    u->reinit_request   = ngx_http_websockify_reinit_request;
+    u->process_header   = ngx_http_websockify_process_header;
+    u->abort_request    = ngx_http_websockify_abort_request;
     u->finalize_request = ngx_http_websockify_finalize_request;
 
     r->upstream = u;
 
-    ctx = ngx_palloc(r->pool, sizeof(ngx_http_websockify_ctx_t));
+    ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_websockify_ctx_t));
     if (ctx == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -972,6 +976,15 @@ ngx_http_websockify_abort_request(ngx_http_request_t *r)
 static void
 ngx_http_websockify_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
 {
+    ngx_http_websockify_ctx_t       *ctx;
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
+    ctx->closed = 1;
+
+    if (ctx->flush_all_ev.timer_set) {
+        ngx_del_timer(&(ctx->flush_all_ev));
+    }
+
     return;
 }
 
