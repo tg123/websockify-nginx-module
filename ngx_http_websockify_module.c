@@ -286,8 +286,8 @@ ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
     free_size = ngx_min(free_size,
                         MAX_WEBSOCKET_FRAME_SIZE + MAX_WEBSOCKET_FRAME_HEADER_SIZE);
 
-    // TODO clean up code, UGLY
-    if (ctx->encoding_protocol == WEBSOCKIFY_ENCODING_PROTOCOL_BASE64) {
+    switch (ctx->encoding_protocol) {
+    case WEBSOCKIFY_ENCODING_PROTOCOL_BASE64:
 
         // inverse of ngx_base64_encoded_length.
         consumed_size  = ngx_min(websocket_payload_consume_size(free_size) / 4 * 3 - 2,
@@ -310,7 +310,10 @@ ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
 
         ngx_encode_base64(&dst, &src);
 
-    } else {
+        break;
+
+    case WEBSOCKIFY_ENCODING_PROTOCOL_BINARY:
+
         consumed_size = ngx_min(websocket_payload_consume_size(free_size), size);
 
         payload_length = consumed_size;
@@ -320,6 +323,13 @@ ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
                                             payload_length);
 
         ngx_memcpy(b->last + header_length, buf, consumed_size);
+
+        break;
+
+    default:
+        // not support
+        return NGX_ERROR;
+        break;
     }
 
     b->last += header_length + payload_length; // push encoded data into buffer
@@ -342,6 +352,7 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
 
     ssize_t                          header_length;
     size_t                           used_buf_size;
+    size_t                           need_buf_size;
     ssize_t                          reply;
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: [%d]", WEBSOCKIFY_FUNC,
@@ -380,20 +391,38 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
 
     case WEBSOCKET_OPCODE_TEXT:
     case WEBSOCKET_OPCODE_BINARY:
-        // FIXME when client send a frame > buffer_size can not hold
-        // current frame remaining data, the connection will hang, should log an error
 
-        if (ctx->encoding_protocol == WEBSOCKIFY_ENCODING_PROTOCOL_BASE64) {
-            ngx_str_t src;
-            ngx_str_t dst;
+        switch (ctx->encoding_protocol) {
+        case WEBSOCKIFY_ENCODING_PROTOCOL_BASE64:
+            need_buf_size = ngx_base64_decoded_length(frame.payload_length);
+            break;
+        case WEBSOCKIFY_ENCODING_PROTOCOL_BINARY:
+            need_buf_size = frame.payload_length;
+            break;
+        default:
+            break;
+        }
 
-            // base64 decode the data
-            if ( !ngx_http_websockify_freesize(b,
-                                               ngx_base64_decoded_length(frame.payload_length)) ) {
-                return NGX_AGAIN;
+        if ( !ngx_http_websockify_freesize(b, need_buf_size) ) {
+
+            if ((b->end - b->start) < need_buf_size) {
+                ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: buffer size too small",
+                              WEBSOCKIFY_FUNC);
+                return NGX_ERROR;
             }
 
-            websocket_server_decode_unmask_payload(&frame);
+            return NGX_AGAIN;
+        }
+
+        websocket_server_decode_unmask_payload(&frame);
+
+
+        switch (ctx->encoding_protocol) {
+        case WEBSOCKIFY_ENCODING_PROTOCOL_BASE64:;
+
+            // base64 decode the data
+            ngx_str_t src;
+            ngx_str_t dst;
 
             src.data = frame.payload;
             src.len =  frame.payload_length;
@@ -407,19 +436,17 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
             }
 
             used_buf_size = dst.len;
-
-        } else {
-
-            if ( !ngx_http_websockify_freesize(b, frame.payload_length) ) {
-                return NGX_AGAIN;
-            }
-
-            websocket_server_decode_unmask_payload(&frame);
-
+            break;
+        case WEBSOCKIFY_ENCODING_PROTOCOL_BINARY:
             ngx_memcpy(b->last, frame.payload, frame.payload_length);
 
             used_buf_size = frame.payload_length;
+
+            break;
+        default:
+            break;
         }
+
 
         break;
 
