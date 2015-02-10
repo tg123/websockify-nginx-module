@@ -400,12 +400,13 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
             need_buf_size = frame.payload_length;
             break;
         default:
+            return NGX_ERROR;
             break;
         }
 
         if ( !ngx_http_websockify_freesize(b, need_buf_size) ) {
 
-            if ((b->end - b->start) < need_buf_size) {
+            if (need_buf_size + b->start > b->end) {
                 ngx_log_error(NGX_LOG_ERR, c->log, 0, "%s: buffer size too small",
                               WEBSOCKIFY_FUNC);
                 return NGX_ERROR;
@@ -444,6 +445,7 @@ ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
 
             break;
         default:
+            return NGX_ERROR;
             break;
         }
 
