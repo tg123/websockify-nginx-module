@@ -274,6 +274,11 @@ ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
     r = c->data;
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
 
+    // make more buf
+    if (ngx_http_websockify_flush_downstream(ctx) == NGX_ERROR ) {
+        return NGX_ERROR;
+    }
+
     b = ctx->encode_send_buf;
     free_size = ngx_http_websockify_freesize(b, MIN_SERVER_FRAME_SIZE);
 
@@ -333,6 +338,10 @@ ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
     }
 
     b->last += header_length + payload_length; // push encoded data into buffer
+
+    if (ngx_http_websockify_flush_downstream(ctx) == NGX_ERROR ) {
+        return NGX_ERROR;
+    }
 
     return (ssize_t)consumed_size;
 }
