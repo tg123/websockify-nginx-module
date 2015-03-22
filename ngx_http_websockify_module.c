@@ -177,8 +177,11 @@ ngx_http_websockify_flush_all(ngx_event_t *ev)
 
     ctx = ev->data;
 
-    ngx_http_websockify_flush_downstream(ctx);
-    ngx_http_websockify_flush_upstream(ctx);
+    if (ngx_http_websockify_flush_downstream(ctx) == NGX_ERROR
+        || ngx_http_websockify_flush_upstream(ctx) == NGX_ERROR) {
+
+        ctx->closed = 1;
+    }
 }
 
 static ssize_t
