@@ -81,31 +81,39 @@ static void ngx_http_websockify_finalize_request(ngx_http_request_t *r,
 
 static void ngx_http_websockify_flush_all(ngx_event_t *ev);
 
-static ssize_t ngx_http_websockify_send(ngx_connection_t *c, ngx_buf_t *b,
-                                        ngx_send_pt send);
+static ssize_t ngx_http_websockify_flush(ngx_connection_t *c, ngx_buf_t *b,
+        ngx_send_pt send);
 
 static ngx_inline ssize_t ngx_http_websockify_flush_downstream(
     ngx_http_websockify_ctx_t *ctx);
 static ngx_inline ssize_t ngx_http_websockify_flush_upstream(
     ngx_http_websockify_ctx_t *ctx);
 
+typedef ssize_t (*ngx_http_websockify_flush_pt)(ngx_http_websockify_ctx_t *ctx);
+
 static ngx_inline size_t ngx_http_websockify_freesize(ngx_buf_t *b,
         size_t size);
+
+static ssize_t
+ngx_http_websockify_send_and_transform(ngx_connection_t *c, u_char *buf,
+                                       const size_t size, ngx_send_pt transform, ngx_http_websockify_flush_pt flush);
 
 static ssize_t ngx_http_websockify_send_downstream_with_encode(
     ngx_connection_t *c,
     u_char *buf, const size_t size);
 
+static ssize_t
+ngx_http_websockify_encode_one_frame(ngx_connection_t *c, u_char *buf,
+                                     const size_t size);
+
 static ssize_t ngx_http_websockify_send_downstream_frame(
     ngx_http_websockify_ctx_t *ctx, u_char opcode, u_char *payload, size_t size);
 
 static ssize_t ngx_http_websockify_send_upstream_with_decode(
-    ngx_connection_t *c,
-    u_char *buf, const size_t size);
+    ngx_connection_t *c, u_char *buf, const size_t size);
 
 static ssize_t
-ngx_http_websockify_decode_one_frame(ngx_http_websockify_ctx_t *ctx,
-                                     u_char *buf,
+ngx_http_websockify_decode_one_frame(ngx_connection_t *c, u_char *buf,
                                      const size_t size);
 
 static ssize_t ngx_http_websockify_empty_recv(ngx_connection_t *c, u_char *buf,
@@ -137,8 +145,8 @@ ngx_http_websockify_flush_downstream(ngx_http_websockify_ctx_t *ctx)
     }
 
     if ( r->connection ) {
-        return ngx_http_websockify_send(r->connection, ctx->encode_send_buf,
-                                        ctx->original_ngx_downstream_send);
+        return ngx_http_websockify_flush(r->connection, ctx->encode_send_buf,
+                                         ctx->original_ngx_downstream_send);
     }
 
     return NGX_ERROR;
@@ -155,8 +163,8 @@ ngx_http_websockify_flush_upstream(ngx_http_websockify_ctx_t *ctx)
     }
 
     if ( r->upstream->peer.connection ) {
-        return ngx_http_websockify_send(r->upstream->peer.connection,
-                                        ctx->decode_send_buf, ctx->original_ngx_upstream_send);
+        return ngx_http_websockify_flush(r->upstream->peer.connection,
+                                         ctx->decode_send_buf, ctx->original_ngx_upstream_send);
     }
 
     return NGX_ERROR;
@@ -174,8 +182,8 @@ ngx_http_websockify_flush_all(ngx_event_t *ev)
 }
 
 static ssize_t
-ngx_http_websockify_send(ngx_connection_t *c, ngx_buf_t *b,
-                         ngx_send_pt send)
+ngx_http_websockify_flush(ngx_connection_t *c, ngx_buf_t *b,
+                          ngx_send_pt send)
 {
     ngx_http_websockify_ctx_t       *ctx;
     ngx_http_request_t              *r;
@@ -254,9 +262,78 @@ ngx_http_websockify_send_downstream_frame(ngx_http_websockify_ctx_t *ctx,
 }
 
 static ssize_t
+ngx_http_websockify_send_and_transform(ngx_connection_t *c, u_char *buf,
+                                       const size_t size, ngx_send_pt transform, ngx_http_websockify_flush_pt flush)
+{
+    ngx_http_websockify_ctx_t       *ctx;
+    ngx_http_request_t              *r;
+    size_t                           total = 0;
+    ssize_t                          consumed;
+
+    r = c->data;
+    ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
+
+    if (flush(ctx) == NGX_ERROR ) {
+        return NGX_ERROR;
+    }
+
+    while (size > total) {
+        consumed = transform(c, buf + total, size - total);
+
+        if (consumed == NGX_ERROR) {
+            return NGX_ERROR;
+
+        } else if (consumed == NGX_AGAIN) {
+
+            if (flush(ctx) > 0) {
+                continue;
+            }
+
+            if (total == 0) {
+                return NGX_AGAIN;
+            }
+
+            break;
+
+        } else if (consumed > 0) {
+
+            total += consumed;
+        } else {
+            // should never happen
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: assert failed",
+                           WEBSOCKIFY_FUNC);
+            return NGX_ERROR;
+        }
+
+    }
+
+    if (flush(ctx) == NGX_ERROR ) {
+        return NGX_ERROR;
+    }
+
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: %d / %d", WEBSOCKIFY_FUNC,
+                   total , size);
+
+    return total;
+}
+
+static ssize_t
 ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
         u_char *buf,
         const size_t size)
+{
+
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: [%d]", WEBSOCKIFY_FUNC,
+                   size);
+
+    return ngx_http_websockify_send_and_transform(c, buf, size,
+            ngx_http_websockify_encode_one_frame, ngx_http_websockify_flush_downstream);
+}
+
+static ssize_t
+ngx_http_websockify_encode_one_frame(ngx_connection_t *c,
+                                     u_char *buf,
+                                     const size_t size)
 {
     ngx_http_websockify_ctx_t       *ctx;
     ngx_buf_t                       *b;
@@ -268,16 +345,11 @@ ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
     size_t                           consumed_size = 0;
 
 
-    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: sending data...[%d]",
-                   WEBSOCKIFY_FUNC, size);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: [%d]", WEBSOCKIFY_FUNC,
+                   size);
 
     r = c->data;
     ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
-
-    // make more buf
-    if (ngx_http_websockify_flush_downstream(ctx) == NGX_ERROR ) {
-        return NGX_ERROR;
-    }
 
     b = ctx->encode_send_buf;
     free_size = ngx_http_websockify_freesize(b, MIN_SERVER_FRAME_SIZE);
@@ -339,10 +411,6 @@ ngx_http_websockify_send_downstream_with_encode(ngx_connection_t *c,
 
     b->last += header_length + payload_length; // push encoded data into buffer
 
-    if (ngx_http_websockify_flush_downstream(ctx) == NGX_ERROR ) {
-        return NGX_ERROR;
-    }
-
     return (ssize_t)consumed_size;
 }
 
@@ -350,53 +418,21 @@ static ssize_t
 ngx_http_websockify_send_upstream_with_decode(ngx_connection_t *c, u_char *buf,
         const size_t size)
 {
-    ngx_http_websockify_ctx_t       *ctx;
-    ngx_http_request_t              *r;
-    size_t                           total = 0;
-    ssize_t                          consumed;
-
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: [%d]", WEBSOCKIFY_FUNC,
                    size);
 
-    r = c->data;
-    ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
+    return ngx_http_websockify_send_and_transform(c, buf, size,
+            ngx_http_websockify_decode_one_frame, ngx_http_websockify_flush_upstream);
 
-    // make more buf
-    if (ngx_http_websockify_flush_upstream(ctx) == NGX_ERROR ) {
-        return NGX_ERROR;
-    }
-
-    while (size > total) {
-        consumed = ngx_http_websockify_decode_one_frame(ctx, buf + total, size - total);
-
-        if (consumed == NGX_ERROR ) {
-            return NGX_ERROR;
-        }
-
-        if (consumed == NGX_AGAIN ) {
-            break;
-        }
-
-        if (consumed > 0) {
-            total += consumed;
-        }
-
-    }
-
-    if (ngx_http_websockify_flush_upstream(ctx) == NGX_ERROR ) {
-        return NGX_ERROR;
-    }
-
-    return total;
 }
 
 static ssize_t
-ngx_http_websockify_decode_one_frame(ngx_http_websockify_ctx_t *ctx,
-                                     u_char *buf,
+ngx_http_websockify_decode_one_frame(ngx_connection_t *c, u_char *buf,
                                      const size_t size)
 {
-    ngx_connection_t                *c;
+    ngx_http_websockify_ctx_t       *ctx;
     ngx_buf_t                       *b;
+    ngx_http_request_t              *r;
     websocket_frame_t                frame;
 
     ssize_t                          header_length;
@@ -404,8 +440,13 @@ ngx_http_websockify_decode_one_frame(ngx_http_websockify_ctx_t *ctx,
     size_t                           need_buf_size;
     ssize_t                          reply;
 
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "%s: [%d]", WEBSOCKIFY_FUNC,
+                   size);
+
+    r = c->data;
+    ctx = ngx_http_get_module_ctx(r, ngx_http_websockify_module);
+
     b = ctx->decode_send_buf;
-    c = ctx->request->connection;
 
     header_length = websocket_server_decode_next_frame(&frame, buf, size);
 
