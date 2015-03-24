@@ -60,11 +60,11 @@ Directives
 Nginx Compatibility
 -------------------
 
- * v0.02
+ * v0.02 - v0.0.3
     * 1.7.x (Tested on 1.7.9)
     * 1.6.x (Tested on 1.6.2)
 
- * v0.01
+ * v0.0.1
 
      * 1.5.x (Tested on 1.5.9)
      * 1.4.x (Tested on 1.4.4)
