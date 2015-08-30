@@ -883,6 +883,11 @@ ngx_http_websockify_create_request(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
+    if ( r->method != NGX_HTTP_GET ) {
+        r->headers_out.status = NGX_HTTP_BAD_REQUEST;
+        return NGX_OK;
+    }
+
     // tricky, let nginx call my reinit
     // do nothing to tcp connections
     r->upstream->request_sent = 1;
