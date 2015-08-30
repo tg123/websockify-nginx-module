@@ -809,9 +809,16 @@ ngx_http_websockify_handler(ngx_http_request_t *r)
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
 
-        u->resolved->host = url.host;
-        u->resolved->port = (in_port_t) (url.no_port ? 5900 : url.port);
-        u->resolved->no_port = url.no_port;
+        if (url.addrs && url.addrs[0].sockaddr) {
+            u->resolved->sockaddr = url.addrs[0].sockaddr;
+            u->resolved->socklen = url.addrs[0].socklen;
+            u->resolved->naddrs = 1;
+            u->resolved->host = url.addrs[0].name;
+        } else {
+            u->resolved->host = url.host;
+            u->resolved->port = (in_port_t) (url.no_port ? 5900 : url.port);
+            u->resolved->no_port = url.no_port;
+        }
 
     }
 
