@@ -34,6 +34,16 @@ location /websockify {
   1. Click connect
 
 
+### Quick start with Docker
+
+Proxy `192.168.188.42:5901` to your localhost/websockify.
+
+_Note_: 5901 is hardcoded in `nginx.vh.default.conf`
+
+```
+docker run -d --add-host vnchost:192.168.188.42 -p 80:80 farmer1992/nginx-websockify
+```
+
 ### Dynamic vnc upstream with help of [ngx-lua](https://github.com/chaoslawful/lua-nginx-module)
 
 an example script read ip and port from url params and verify them by md5 
