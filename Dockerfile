@@ -2,9 +2,11 @@ FROM alpine:3.5
 
 LABEL maintainer="NGINX Docker Maintainers <docker-maint@nginx.com>"
 
-ADD . \src
+ADD . /src
 
 ENV NGINX_VERSION 1.12.2
+ENV LUAJIT_VERSION 2.0.5
+ENV LUA_NGINX_MODULE_VERSION 0.10.15
 
 RUN GPG_KEYS=B0F4253373F8F6F510D42178520A9993A1C052F8 \
 	&& CONFIG="\
@@ -52,6 +54,7 @@ RUN GPG_KEYS=B0F4253373F8F6F510D42178520A9993A1C052F8 \
 		--with-file-aio \
 		--with-http_v2_module \
 		--add-module=/src \
+		--add-module=/lua-nginx-module-${LUA_NGINX_MODULE_VERSION} \
 	" \
 	&& addgroup -S nginx \
 	&& adduser -D -S -h /var/cache/nginx -s /sbin/nologin -G nginx nginx \
@@ -62,6 +65,7 @@ RUN GPG_KEYS=B0F4253373F8F6F510D42178520A9993A1C052F8 \
 		openssl-dev \
 		pcre-dev \
 		zlib-dev \
+		readline-dev \
 		linux-headers \
 		curl \
 		gnupg \
@@ -87,6 +91,19 @@ RUN GPG_KEYS=B0F4253373F8F6F510D42178520A9993A1C052F8 \
 	&& mkdir -p /usr/src \
 	&& tar -zxC /usr/src -f nginx.tar.gz \
 	&& rm nginx.tar.gz \
+
+	# LuaJit & nginx-lua-module
+	&& curl -fSL https://github.com/openresty/luajit2/archive/v${LUAJIT_VERSION}.tar.gz  -o LuaJIT.tar.gz \
+	&& tar zxvf LuaJIT.tar.gz \
+
+	&& curl -fSL https://github.com/openresty/lua-nginx-module/archive/v${LUA_NGINX_MODULE_VERSION}.tar.gz  -o lua-nginx-module.tar.gz \
+	&& tar zxvf lua-nginx-module.tar.gz \
+
+	&& rm -f LuaJIT.tar.gz lua-nginx-module.tar.gz \
+
+	&& make -C /luajit2-${LUAJIT_VERSION} \
+	&& make -C /luajit2-${LUAJIT_VERSION} install \
+
 	&& cd /usr/src/nginx-$NGINX_VERSION \
 	&& ./configure $CONFIG --with-debug \
 	&& make -j$(getconf _NPROCESSORS_ONLN) \
@@ -133,13 +150,12 @@ RUN GPG_KEYS=B0F4253373F8F6F510D42178520A9993A1C052F8 \
 	\
 	# Bring in tzdata so users could set the timezones through the environment
 	# variables
-	&& apk add --no-cache tzdata \
+	&& apk add --no-cache tzdata libgcc \
 	\
 	# forward request and error logs to docker log collector
 	&& ln -sf /dev/stdout /var/log/nginx/access.log \
-	&& ln -sf /dev/stderr /var/log/nginx/error.log
-
-RUN rm -rf /src
+	&& ln -sf /dev/stderr /var/log/nginx/error.log \
+	&& rm -rf /src /lua-nginx-module-${LUA_NGINX_MODULE_VERSION} /luajit2-${LUAJIT_VERSION}
 
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY nginx.vh.default.conf /etc/nginx/conf.d/default.conf
