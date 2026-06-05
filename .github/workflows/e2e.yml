@@ -1,0 +1,46 @@
+name: e2e
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx: ['1.24.0', '1.25.3', '1.27.3']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libpcre3-dev zlib1g-dev libssl-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build nginx with the websockify module
+        id: build
+        run: |
+          NGINX_BIN="$(NGINX_VERSION=${{ matrix.nginx }} ./e2e/build-nginx.sh)"
+          echo "nginx_bin=${NGINX_BIN}" >> "$GITHUB_OUTPUT"
+
+      - name: Install e2e dependencies
+        working-directory: e2e
+        run: npm ci || npm install
+
+      - name: Run e2e tests
+        working-directory: e2e
+        env:
+          NGINX_BIN: ${{ steps.build.outputs.nginx_bin }}
+        run: npm test

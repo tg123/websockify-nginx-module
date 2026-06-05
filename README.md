@@ -15,6 +15,20 @@ Embed the [Websockify](https://github.com/kanaka/websockify/) into Nginx
     make install
 
 
+## Testing
+
+A modern end-to-end test suite lives in [`e2e/`](e2e/). It builds nginx with the
+module, starts a real upstream, and exercises the WebSocket endpoint with a
+standards-compliant client. See [`e2e/README.md`](e2e/README.md) for details.
+
+```
+cd e2e
+npm install
+export NGINX_BIN="$(./build-nginx.sh)"
+npm test
+```
+
+
 ## Uasge
 
 ### Single noVNC websockify proxy
