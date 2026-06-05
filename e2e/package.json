@@ -1,0 +1,16 @@
+{
+  "name": "websockify-nginx-module-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Modern end-to-end tests for the websockify nginx module",
+  "type": "module",
+  "scripts": {
+    "test": "node --test 'test/**/*.test.mjs'"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
